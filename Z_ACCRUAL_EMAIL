@@ -1,0 +1,2430 @@
+*&---------------------------------------------------------------------*
+*& Report ZFI_ACCRUAL_EMAIL_TRIGGER
+*----------------------------------------------------------------------*
+* Functional Spec : ZFSE-00085746                                      *
+* DD-Reference :    ZDDE-00085747                                      *
+*----------------------------------------------------------------------*
+* Description :                                                        *
+* This program is developed to send the Reminder, Escalation,          *
+* Notification at various stages in form of an email to the            *
+* responsible person. This program should  be executed in background   *
+*----------------------------------------------------------------------*
+*& Change Log:                                                         *
+*&---------------------------------------------------------------------*
+*& Init     |  Name     |     Date   |            Text                 *
+*&---------------------------------------------------------------------*
+*& KANDUPA1 Pavan Kandula  24-Oct-2024 CR: 1100249506  Initial version *
+*& KANDUPA1 Pavan Kandula  27-Jan-2025 CR: 1100249506  SCR1125 : Collet*
+*&                                     Accrual items data based on the *
+*&                                     values maintained in ZCONSTANT  *
+*&                                     table, Send review Notification *
+*&                                 email to FRA, While sending emails  *
+*&                                 added new fields in Excel attachment*
+*& AMIREHA1 A.Harshitha   22-Sep-2025 CR:1100277278 Added selection    *
+*&                                    screen fields like recipients    *
+*&                                    and email text and accural review*
+*&                                    accural approval, acuural status *
+*&                                 and modified logic to fetch the data*
+*&---------------------------------------------------------------------*
+REPORT zfi_accrual_email_trigger.
+
+* Include for Data Declarations
+INCLUDE zfi_accrual_email_trigger_top.
+
+* Include for Selection Screen
+INCLUDE zfi_accrual_email_trigger_sel.
+
+* Include for Processing Logic
+INCLUDE zfi_accrual_email_triger_forms.
+
+START-OF-SELECTION.
+* Authorization check
+  PERFORM authorty_check.
+* Data display
+  PERFORM disp_data.
+
+END-OF-SELECTION.
+  IF sy-batch = abap_true.
+    IF gt_review_n IS NOT INITIAL.
+      PERFORM send_email USING p_text p_recp[].
+    ENDIF.
+  ENDIF.
+
+#INCLUDE - CODE
+
+*&---------------------------------------------------------------------*
+*& Include          ZFI_ACCRUAL_EMAIL_TRIGGER_TOP
+*&---------------------------------------------------------------------*
+* Functional Spec : ZFSE-00085746                                      *
+* DD-Reference :    ZDDE-00085747                                      *
+*----------------------------------------------------------------------*
+* Description :                                                        *
+* This program is developed to send the reminders, escalations,        *
+* notifications at various stages in form of an email to the           *
+* responsible person. This program should  be executed in background   *
+*----------------------------------------------------------------------*
+*& Change Log:                                                         *
+*&---------------------------------------------------------------------*
+*& Init     |  Name     |     Date   |            Text                 *
+*&---------------------------------------------------------------------*
+*& KANDUPA1 Pavan Kandula  24-Oct-2024 CR: 1100249506  Initial version *
+*& KANDUPA1 Pavan Kandula  27-Jan-2025 CR: 1100249506  SCR1125 : Collet*
+*&                                     Accrual items data based on the *
+*&                                     values maintained in ZCONSTANT  *
+*&                                     table, Send review Notification *
+*&                                 email to FRA, While sending emails  *
+*&                                 added new fields in Excel attachment*
+*& SAXENHA2 Harshit Saxena 04-Aug-2025 CR: 1100274238 Enhancement to   *
+*&                                     Trigger Email for Preparer and  *
+*&                                     Requester from PO Header Text   *
+*&                                     for ZIP0 Document Type.         *
+*& KAPULAN1 Anusha Kapuluri 28-Jul-2026 CR:1100296890 Special Currency *
+*&                                       amount conversion             *
+*&---------------------------------------------------------------------*
+
+  TYPES: BEGIN OF gty_data,
+           bukrs                  TYPE ace_bukrs,
+           ref_key                TYPE ace_obj_id,
+           ref_subkey             TYPE ace_subobj_id,
+           sakto                  TYPE saknr,
+           period_end_date        TYPE ace_period_end_date,
+           netwr                  TYPE c LENGTH 30,
+           srvc_confm_amnt        TYPE c LENGTH 30,
+           actual_cost            TYPE c LENGTH 30,
+           accural_amount         TYPE c LENGTH 30,
+           rwcurper               TYPE fins_currw,
+           period_amnt_source     TYPE ace_period_amnt_source,
+           period_amnt_changed_on TYPE ace_per_amnt_changed_on_date,
+           review_status          TYPE aceds_rvw_status,
+           reviewed_by            TYPE ace_ds_paccr_reviewer_uname,
+           reviewed_on            TYPE ace_ds_reviewed_on_date,
+           approval_status        TYPE aceds_aprvl_status,
+           approved_by            TYPE ace_ds_paccr_approver_uname,
+           approved_on            TYPE ace_ds_approved_on_date,
+           costobjecttype         TYPE char3,
+           costobject             TYPE string,
+           costobjectowner        TYPE char12,
+           afnam                  TYPE afnam,
+           ebeln                  TYPE ebeln,
+           responsible            TYPE char12,
+           action                 TYPE string,
+         END OF gty_data,
+
+         BEGIN OF  gty_acsobj,
+           bukrs                  TYPE ace_bukrs,
+           ref_key                TYPE ace_obj_id,
+           ref_subkey             TYPE ace_subobj_id,
+           itemtype               TYPE ace_itemtype,
+           period_end_date        TYPE ace_period_end_date,
+           period_amnt_source     TYPE ace_period_amnt_source,
+           period_amnt_changed_on TYPE ace_per_amnt_changed_on_date,
+           period_amnt_wsl        TYPE ace_period_amnt_wcurr,
+           rwcurper               TYPE fins_currw,
+           adjusted_per_amnt_wsl  TYPE ace_adjusted_per_amnt_wcurr,
+           review_status          TYPE aceds_rvw_status,
+           reviewed_by            TYPE ace_ds_paccr_reviewer_uname,
+           reviewed_on            TYPE ace_ds_reviewed_on_date,
+           approval_status        TYPE aceds_aprvl_status,
+           approved_by            TYPE ace_ds_paccr_approver_uname,
+           approved_on            TYPE ace_ds_approved_on_date,
+
+         END OF gty_acsobj,
+
+         BEGIN OF gty_mail_id,
+           kostl     TYPE kostl,
+           smtp_addr TYPE string,
+         END OF gty_mail_id,
+
+         BEGIN OF gty_ekpo,
+           ebeln TYPE ebeln,
+           ebelp TYPE ebelp,
+           netwr TYPE netwr,
+           afnam TYPE afnam,
+           knttp TYPE knttp,
+           waers TYPE waers,
+         END OF gty_ekpo,
+
+         BEGIN OF gty_ekkn,
+           ebeln      TYPE ebeln,
+           ebelp      TYPE ebelp,
+           zekkn      TYPE dzekkn,
+           sakto      TYPE saknr,
+           kostl      TYPE kostl,
+           aufnr      TYPE aufnr,
+           ps_psp_pnr TYPE ps_psp_pnr,
+         END OF gty_ekkn,
+
+         BEGIN OF gty_csks,
+           kostl      TYPE kostl,
+           verak      TYPE verak,
+           verak_user TYPE verak_user,
+         END OF gty_csks,
+
+         BEGIN OF gty_csks1,
+           kostl      TYPE kostl,
+           verak_user TYPE verak_user,
+         END OF gty_csks1,
+
+         BEGIN OF gty_aufk,
+           aufnr      TYPE aufnr,
+           veraa_user TYPE veraa_user,
+           user2      TYPE aufuser2,
+         END OF gty_aufk,
+
+         BEGIN OF gty_const,
+           const TYPE zconst,
+           value TYPE  zvalue,
+         END OF gty_const,
+
+         BEGIN OF gty_prps,
+           vernr TYPE ps_vernr,
+           pspnr TYPE ps_pspnr,
+           fkstl TYPE ps_fkstl,
+           posid TYPE ps_posid,
+         END OF gty_prps,
+
+         BEGIN OF gty_tcj04,
+           vernr    TYPE ps_vernr,
+           s_usrnam TYPE so_usr_nam,
+         END OF gty_tcj04,
+
+         BEGIN OF gty_fra,
+           fra_lead  TYPE zzfra_lead,
+           username  TYPE usnam,
+           smtp_addr TYPE ad_smtpadr,
+         END OF gty_fra.
+
+
+  DATA:
+    gt_review_n   TYPE STANDARD TABLE OF gty_data,
+    gt_mail_id    TYPE STANDARD TABLE OF gty_mail_id,
+    gt_mail       TYPE STANDARD TABLE OF gty_mail_id,
+    gt_recepients TYPE STANDARD TABLE OF gty_fra,
+    gt_acesobj    TYPE STANDARD TABLE OF gty_acsobj WITH EMPTY KEY,
+    gw_accr_data  TYPE gty_data,
+    gv_bukrs      TYPE bukrs,
+    gt_const      TYPE STANDARD TABLE OF gty_const,
+    gr_bukrs      TYPE RANGE OF bukrs,
+    gt_ekpo       TYPE STANDARD TABLE OF gty_ekpo WITH EMPTY KEY,
+    gt_ekkn       TYPE STANDARD TABLE OF gty_ekkn WITH EMPTY KEY,
+    gt_veark      TYPE STANDARD TABLE OF gty_csks,
+    gt_veraa_user TYPE STANDARD TABLE OF gty_aufk,
+    gt_vernr      TYPE STANDARD TABLE OF gty_prps,
+    gt_usr_nam    TYPE STANDARD TABLE OF gty_tcj04,
+    gt_verak_user TYPE STANDARD TABLE OF gty_csks1,
+    lv_recp       TYPE char40.
+
+
+
+  CONSTANTS:gc_repid   TYPE progname VALUE 'ZFI_ACCRUAL_EMAIL_TRIGGER',
+            gc_repid1  TYPE progname VALUE 'ZCOMV_F4_RECIPIENTS',
+            gc_approve TYPE string VALUE 'APPROVE',
+            gc_review  TYPE string VALUE 'REVIEW'.
+
+*&---------------------------------------------------------------------*
+*& Include          ZFI_ACCRUAL_EMAIL_TRIGGER_SEL
+*&---------------------------------------------------------------------*
+*----------------------------------------------------------------------*
+* Functional Spec : ZFSE-00085746                                      *
+* DD-Reference :    ZDDE-00085747                                      *
+*----------------------------------------------------------------------*
+* Description :                                                        *
+* This program is developed to send the reminders, escalations,        *
+* notifications at various stages in form of an email to the           *
+* responsible person. This program should  be executed in background   *
+*----------------------------------------------------------------------*
+*& Change Log:                                                         *
+*&---------------------------------------------------------------------*
+*& Init     |  Name     |     Date   |            Text                 *
+*&---------------------------------------------------------------------*
+*& KANDUPA1 Pavan Kandula  24-Oct-2024 CR: 1100249506  Initial version *
+*& AMIREHA1 A.Harshitha    22-Sep-2025 CR: 1100277278  Added selection *
+*&                                         fields for accrual process  *
+*&                                         Email attachemnt,    email  *
+*&                                         template and recipients     *
+*&---------------------------------------------------------------------*
+
+
+
+
+SELECTION-SCREEN BEGIN OF BLOCK a1 WITH FRAME TITLE TEXT-001.
+  SELECT-OPTIONS: s_bukrs FOR gv_bukrs OBLIGATORY.
+  PARAMETERS: p_date TYPE sy-datum OBLIGATORY.
+SELECTION-SCREEN END OF BLOCK a1.
+
+
+PARAMETERS: p_r1 RADIOBUTTON GROUP r1,
+            p_r2 RADIOBUTTON GROUP r1,
+            p_r3 RADIOBUTTON GROUP r1.
+
+PARAMETERS: p_box1 AS CHECKBOX.
+
+
+SELECT-OPTIONS: p_recp FOR lv_recp OBLIGATORY.
+PARAMETERS: p_text TYPE smtg_tmpl_id.
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_recp-low.
+  PERFORM f4_for_recipients.
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_text.
+  PERFORM f4_for_emailtext.
+*&---------------------------------------------------------------------*
+*& Form f4_for_Recipients
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*&      <-- S_USRN
+*&---------------------------------------------------------------------*
+FORM f4_for_recipients.
+
+  SELECT value FROM zconstants INTO TABLE @DATA(lt_values) WHERE repid = 'ZCOMV_F4_RECIPIENTS'.
+
+  CALL FUNCTION 'F4IF_INT_TABLE_VALUE_REQUEST'
+    EXPORTING
+      retfield     = 'S_USRNAM'
+      dynpprog     = sy-repid
+      dynpnr       = sy-dynnr
+      dynprofield  = TEXT-027
+      window_title = TEXT-026
+      value_org    = 'S'
+    TABLES
+      value_tab    = lt_values.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form f4_for_emailtext
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*&      <-- P_TEXT
+*&---------------------------------------------------------------------*
+FORM f4_for_emailtext.
+
+  SELECT value FROM zconstants INTO TABLE @DATA(lt_data) WHERE repid = 'ZCOMV_F4_EMAILTEXT'.
+
+  CALL FUNCTION 'F4IF_INT_TABLE_VALUE_REQUEST'
+    EXPORTING
+      retfield     = 'ID'
+      dynpprog     = sy-repid
+      dynpnr       = sy-dynnr
+      dynprofield  = TEXT-028
+      window_title = TEXT-026
+      value_org    = 'S'
+    TABLES
+      value_tab    = lt_data.
+
+
+
+ENDFORM.
+
+
+*&---------------------------------------------------------------------*
+*& Include          ZFI_ACCRUAL_EMAIL_TRIGER_FORMS
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*& Form authorty_check
+*----------------------------------------------------------------------*
+* Functional Spec : ZFSE-00085746                                      *
+* DD-Reference :    ZDDE-00085747                                      *
+*----------------------------------------------------------------------*
+* Description :                                                        *
+* This program is developed to send the reminders, escalations,        *
+* notifications at various stages in form of an email to the           *
+* responsible person. This program should  be executed in background   *
+*----------------------------------------------------------------------*
+*& Change Log:                                                         *
+*&---------------------------------------------------------------------*
+*& Init     |  Name     |     Date   |            Text                 *
+*&---------------------------------------------------------------------*
+*& KANDUPA1 Pavan Kandula  24-Oct-2024 CR: 1100249506  Initial version *
+*& KANDUPA1 Pavan Kandula  27-Jan-2025 CR: 1100249506  SCR1125 : Collet*
+*&                                     Accrual items data based on the *
+*&                                     values maintained in ZCONSTANT  *
+*&                                     table, Send review Notification *
+*&                                 email to FRA, While sending emails  *
+*&                                 added new fields in Excel attachment*
+*& SAXENHA2 Harshit Saxena 04-Aug-2025 CR: 1100274238 Enhancement to   *
+*&                                     Trigger Email for Preparer and  *
+*&                                     Requester from PO Header Text   *
+*&                                     for ZIP0 Document Type.         *
+*& AMIREHA1 A.Harshitha   22-Sep-2025 CR:1100277278 Modified logic to  *
+*&                                     fetch data for accrual review,  *
+*&                                     approval and status             *
+*& JIMMASU1 Sushma Swaraj 05-Nov-2025 CR:1100281075 Replaced fiori URL *
+*&                                         with zconstants entry in    *
+*&                                         email template              *
+*& KAPULAN1 Anusha K      24-Jul-2026 CR:1100296890 Special Currency   *
+*&                                       amount conversion             *
+*&---------------------------------------------------------------------*
+FORM authorty_check .
+
+  TYPES: BEGIN OF lty_bukrs,
+           bukrs TYPE bukrs,
+         END OF lty_bukrs.
+
+  FIELD-SYMBOLS: <fs_bukrs> TYPE lty_bukrs.
+
+  CONSTANTS: lc_f_bkpf_buk TYPE xuobject   VALUE 'F_BKPF_BUK',
+             lc_bukrs      TYPE fieldname  VALUE 'BUKRS',
+             lc_actvt      TYPE fieldname  VALUE 'ACTVT',
+             lc_03         TYPE activ_auth VALUE '03',
+             lc_sign       TYPE tvarv_sign VALUE 'I',
+             lc_opt        TYPE tvarv_opti VALUE 'EQ'.
+
+
+  DATA: lt_bukrs TYPE STANDARD TABLE OF lty_bukrs,
+        ls_bukrs LIKE LINE OF           gr_bukrs.
+
+
+*Authorization check on company code
+  CLEAR gr_bukrs.
+  SELECT bukrs FROM t001
+               INTO TABLE lt_bukrs
+               WHERE bukrs IN s_bukrs.
+  IF sy-subrc EQ 0.
+    LOOP AT lt_bukrs ASSIGNING <fs_bukrs>.
+      AUTHORITY-CHECK OBJECT lc_f_bkpf_buk
+         ID lc_bukrs FIELD <fs_bukrs>-bukrs
+         ID lc_actvt FIELD lc_03.
+      IF sy-subrc EQ 0.
+*      Those records should be considered for processing
+        ls_bukrs-sign   = lc_sign.
+        ls_bukrs-option = lc_opt.
+        ls_bukrs-low    = <fs_bukrs>-bukrs.
+        APPEND ls_bukrs TO gr_bukrs.
+      ENDIF.
+    ENDLOOP.
+  ENDIF.
+*If no authorization for any company code entered in sel-screen
+*No authorization to execute the report error gets populated.
+  IF gr_bukrs IS INITIAL.
+    LEAVE LIST-PROCESSING.
+  ENDIF.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form disp_data
+*&---------------------------------------------------------------------*
+FORM disp_data.
+
+
+  DATA: lv_date TYPE sy-datum,
+        lv_info TYPE string.
+
+
+**Constant declaration
+  CONSTANTS :lc_n        TYPE char1  VALUE 'N',
+             lc_r        TYPE char1  VALUE 'R',
+             lc_approved TYPE string VALUE 'APPROVED',
+             lc_reject   TYPE string VALUE 'REJECTED',
+             lc_plncst   TYPE ace_itemtype VALUE 'PLNCST'.
+
+** To clear the gloabl variables.
+  PERFORM  clear_tables.
+
+  IF p_date IS INITIAL.
+    p_date = cl_abap_context_info=>get_system_date( ).
+  ENDIF.
+** Get last day of month
+  CALL FUNCTION 'RP_LAST_DAY_OF_MONTHS'
+    EXPORTING
+      day_in            = p_date
+    IMPORTING
+      last_day_of_month = lv_date.
+
+*Fetch Period data of Accrual Item
+  SELECT DISTINCT bukrs,
+                  ref_key,
+                  ref_subkey,
+                  itemtype,
+                  period_end_date,
+                  period_amnt_source,
+                  period_amnt_changed_on,
+                  period_amnt_wsl,
+                  rwcurper,
+                  adjusted_per_amnt_wsl,
+                  review_status,
+                  reviewed_by,
+                  reviewed_on,
+                  approval_status,
+                  approved_by,
+                  approved_on
+                  FROM acesobj_item_per
+                  INTO TABLE @gt_acesobj
+                  WHERE bukrs         IN @gr_bukrs
+                  AND period_end_date = @lv_date
+                  ORDER BY ref_key, ref_subkey.
+
+  IF sy-subrc <> 0.
+    MESSAGE i004(zfse_00085746).
+    LEAVE LIST-PROCESSING.
+  ENDIF.
+* Fetch data from EKPO
+  SELECT DISTINCT
+        ekpo~ebeln,
+        ekpo~ebelp,
+        ekpo~netwr,
+        ekpo~afnam,
+        ekpo~knttp,
+        i~documentcurrency
+   FROM ekpo
+   INNER JOIN i_purchaseorderapi01 AS i
+           ON i~purchaseorder = ekpo~ebeln
+   INNER JOIN @gt_acesobj AS gt
+           ON ekpo~ebeln = gt~ref_key
+   ORDER BY ekpo~ebeln, ekpo~ebelp
+   INTO TABLE @gt_ekpo.
+  IF sy-subrc EQ 0.
+* Fetch data from EKKN
+    SELECT DISTINCT  ekkn~ebeln,
+                     ekkn~ebelp,
+                     ekkn~zekkn,
+                     ekkn~sakto,
+                     ekkn~kostl,
+                     ekkn~aufnr,
+                     ekkn~ps_psp_pnr
+                     FROM ekkn
+                     INNER JOIN @gt_ekpo AS po
+                     ON ekkn~ebeln = po~ebeln
+                     AND ekkn~ebelp = po~ebelp
+                     ORDER BY ekkn~ebeln, ekkn~ebelp,ekkn~zekkn
+                     INTO TABLE @gt_ekkn.
+    IF sy-subrc EQ 0.
+* Fetch data from CSKS
+      SELECT DISTINCT csks~kostl,
+                      csks~verak,
+                      csks~verak_user
+                      FROM csks
+                      INNER JOIN @gt_ekkn AS gt
+                      ON csks~kostl = gt~kostl
+                      ORDER BY csks~kostl
+                      INTO TABLE @gt_veark.
+
+
+
+
+* Fetch data from AUFK
+      SELECT DISTINCT aufk~aufnr,
+                      aufk~veraa_user,
+                      aufk~user2
+                      FROM aufk
+                      INNER JOIN @gt_ekkn AS gt
+                      ON aufk~aufnr = gt~aufnr
+                      ORDER BY aufk~aufnr
+                      INTO TABLE @gt_veraa_user.
+* Fetch data from PRPS
+      SELECT DISTINCT  prps~vernr,
+                       prps~pspnr,
+                       prps~fkstl,
+                       prps~posid
+                       FROM prps
+                       INNER JOIN @gt_ekkn AS gt
+                       ON prps~pspnr = gt~ps_psp_pnr
+                       ORDER BY prps~pspnr
+                       INTO TABLE @gt_vernr.
+      IF sy-subrc EQ 0.
+* Fetch data from TCJ04
+        SELECT vernr,
+               s_usrnam
+               FROM tcj04
+               INTO TABLE @gt_usr_nam
+               FOR ALL ENTRIES IN @gt_vernr
+               WHERE vernr = @gt_vernr-vernr.
+
+
+* Fetch data from CSKS
+        SELECT a~kostl,a~verak_user
+          FROM csks AS a
+          INNER JOIN @gt_vernr AS b
+          ON a~kostl = b~fkstl
+          INTO TABLE @gt_verak_user.
+
+      ENDIF.
+    ENDIF.
+  ENDIF.
+* Fetch data from constant table
+  SELECT const,
+         value
+         FROM zconstants
+         INTO TABLE @gt_const
+         WHERE repid IN ( @gc_repid , @gc_repid1 ).
+
+
+** Fetch FRA Poster, FRA Lead, FRA approver
+  SELECT  a~fra_lead,
+          a~username,
+          b~smtp_addr
+          FROM zfi_accr_eml_usr AS a
+          INNER JOIN p_user002 AS b
+          ON a~username = b~bname
+          WHERE a~companycode IN @s_bukrs
+          INTO TABLE @gt_recepients.
+
+  LOOP AT gt_acesobj ASSIGNING FIELD-SYMBOL(<fs_acceobj>) WHERE itemtype = lc_plncst.
+    "Accrual Review
+    IF p_r1 IS NOT INITIAL.
+      IF <fs_acceobj>-review_status = lc_n AND
+        <fs_acceobj>-period_amnt_changed_on <= p_date.
+        PERFORM fetch_data USING <fs_acceobj>  gc_review.
+      ENDIF.
+    ENDIF.
+
+    "Accrual Approval
+    IF p_r2 IS NOT INITIAL.
+      IF <fs_acceobj>-review_status = abap_true AND
+        <fs_acceobj>-approval_status = lc_n AND
+          <fs_acceobj>-period_amnt_changed_on <= p_date.
+        PERFORM fetch_data USING <fs_acceobj> gc_approve.
+      ENDIF.
+    ENDIF.
+
+
+* Accrual Status
+    IF p_r3 IS NOT INITIAL.
+      IF ( <fs_acceobj>-approval_status = abap_true OR
+           <fs_acceobj>-approval_status = lc_r ) AND
+           <fs_acceobj>-approved_on <= p_date.
+
+        CLEAR lv_info.
+        IF <fs_acceobj>-approval_status = abap_true.
+          lv_info = lc_approved.
+        ELSEIF <fs_acceobj>-approval_status = lc_r .
+          lv_info = lc_reject.
+        ENDIF.
+        PERFORM fetch_data USING <fs_acceobj>  lv_info.
+      ENDIF.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+*& Form fetch_data
+*&---------------------------------------------------------------------*
+FORM fetch_data  USING    ps_acceobj TYPE gty_acsobj
+                          pt_status  TYPE string.
+
+  CONSTANTS: lc_k      TYPE knttp VALUE 'K',
+             lc_f      TYPE knttp VALUE 'F',
+             lc_p      TYPE knttp VALUE 'P',
+             lc_io     TYPE char3 VALUE 'IO',
+             lc_co     TYPE char3 VALUE 'CC',
+             lc_wbs    TYPE char3 VALUE 'WBS',
+             lc_plncst TYPE ace_itemtype VALUE 'PLNCST',
+             lc_actcst TYPE ace_itemtype VALUE 'ACTCST',
+             lc_accrl  TYPE ace_itemtype VALUE 'ACCRL'.
+
+  DATA: lv_ekkn TYPE dzekkn.
+
+  DATA(lv_ebelp) = CONV ebelp( ps_acceobj-ref_subkey+0(5) ).
+
+  DATA(ls_ekpo) = VALUE #( gt_ekpo[ ebeln = ps_acceobj-ref_key+0(10)
+                                    ebelp = lv_ebelp ] OPTIONAL ).
+  IF ls_ekpo IS NOT INITIAL.
+    gw_accr_data-afnam = ls_ekpo-afnam.
+
+    WRITE ls_ekpo-netwr
+      TO gw_accr_data-netwr
+      CURRENCY ls_ekpo-waers.
+  ENDIF.
+
+  lv_ekkn = ps_acceobj-ref_subkey+6(2).
+
+  DATA(ls_ekkn) = VALUE #( gt_ekkn[ ebeln = ls_ekpo-ebeln
+                                    ebelp = ls_ekpo-ebelp zekkn = lv_ekkn ] OPTIONAL ).
+
+  IF ls_ekkn IS NOT INITIAL.
+    gw_accr_data-sakto = ls_ekkn-sakto.
+    CASE ls_ekpo-knttp.
+      WHEN lc_k.
+        gw_accr_data-costobject = ls_ekkn-kostl.
+        gw_accr_data-costobjecttype = lc_co.
+
+        DATA(ls_veark) = VALUE #( gt_veark[ kostl = ls_ekkn-kostl ] OPTIONAL ).
+        IF ls_veark IS NOT INITIAL.
+          gw_accr_data-costobjectowner = ls_veark-verak_user.
+          gw_accr_data-responsible     = ls_veark-verak.
+        ELSE.
+          gw_accr_data-costobjectowner = ls_veark-verak_user.
+        ENDIF.
+
+      WHEN lc_f.
+        gw_accr_data-costobject = ls_ekkn-aufnr.
+        gw_accr_data-costobjecttype = lc_io.
+        DATA(ls_veraa_user) = VALUE #( gt_veraa_user[ aufnr = ls_ekkn-aufnr ] OPTIONAL ).
+        IF ls_veraa_user IS NOT INITIAL.
+          gw_accr_data-costobjectowner = ls_veraa_user-veraa_user.
+          gw_accr_data-responsible = ls_veraa_user-user2.
+        ENDIF.
+
+      WHEN lc_p.
+        IF ls_ekkn-ps_psp_pnr IS NOT INITIAL.
+          DATA: lv_pspnr_ext TYPE string.
+          CALL FUNCTION 'CONVERSION_EXIT_ABPSP_OUTPUT'
+            EXPORTING
+              input  = ls_ekkn-ps_psp_pnr
+            IMPORTING
+              output = lv_pspnr_ext.
+        ENDIF.
+        gw_accr_data-costobject = lv_pspnr_ext.
+        CLEAR: lv_pspnr_ext.
+        gw_accr_data-costobjecttype = lc_wbs.
+        DATA(ls_vernr) = VALUE #( gt_vernr[ pspnr = ls_ekkn-ps_psp_pnr ] OPTIONAL ).
+        IF ls_vernr IS NOT INITIAL.
+          DATA(ls_usrnam) = VALUE #( gt_usr_nam[ vernr = ls_vernr-vernr ] OPTIONAL ).
+          IF ls_usrnam IS NOT INITIAL.
+            gw_accr_data-responsible = ls_usrnam-s_usrnam.
+          ENDIF.
+          DATA(ls_verak) = VALUE #( gt_verak_user[ kostl =  ls_vernr-fkstl ] OPTIONAL ).
+          gw_accr_data-costobjectowner = ls_verak-verak_user.
+        ENDIF.
+    ENDCASE.
+  ENDIF.
+  gw_accr_data-bukrs = ps_acceobj-bukrs .
+  gw_accr_data-ref_key = ps_acceobj-ref_key.
+  gw_accr_data-ebeln = ps_acceobj-ref_key+0(10).
+  gw_accr_data-ref_subkey = ps_acceobj-ref_subkey.
+  gw_accr_data-period_end_date = ps_acceobj-period_end_date.
+  gw_accr_data-period_amnt_source = ps_acceobj-period_amnt_source.
+  gw_accr_data-period_amnt_changed_on = ps_acceobj-period_amnt_changed_on.
+  gw_accr_data-rwcurper = ps_acceobj-rwcurper.
+  gw_accr_data-review_status = ps_acceobj-review_status.
+  gw_accr_data-reviewed_by  = ps_acceobj-reviewed_by.
+  gw_accr_data-reviewed_on  = ps_acceobj-reviewed_on.
+  gw_accr_data-approval_status = ps_acceobj-approval_status.
+  gw_accr_data-approved_by  = ps_acceobj-approved_by.
+  gw_accr_data-approved_on  = ps_acceobj-approved_on.
+  gw_accr_data-action = pt_status.
+** Collect Service confirmed amount,Actual cost,Accrual amount.
+  LOOP AT gt_acesobj ASSIGNING FIELD-SYMBOL(<fs_item>) WHERE ref_key   =  ps_acceobj-ref_key
+                                                       AND  ref_subkey = ps_acceobj-ref_subkey.
+    IF <fs_item>-itemtype = lc_plncst.
+      IF <fs_item>-adjusted_per_amnt_wsl IS NOT INITIAL.
+        WRITE <fs_item>-adjusted_per_amnt_wsl
+          TO gw_accr_data-srvc_confm_amnt
+          CURRENCY <fs_item>-rwcurper.
+      ELSE.
+        WRITE <fs_item>-period_amnt_wsl
+          TO gw_accr_data-srvc_confm_amnt
+          CURRENCY <fs_item>-rwcurper.
+      ENDIF.
+
+    ELSEIF <fs_item>-itemtype = lc_actcst.
+      IF <fs_item>-adjusted_per_amnt_wsl IS NOT INITIAL.
+        WRITE <fs_item>-adjusted_per_amnt_wsl
+          TO gw_accr_data-actual_cost
+          CURRENCY <fs_item>-rwcurper.
+      ELSE.
+        WRITE <fs_item>-period_amnt_wsl
+          TO gw_accr_data-actual_cost
+          CURRENCY <fs_item>-rwcurper.
+      ENDIF.
+
+    ELSEIF <fs_item>-itemtype = lc_accrl.
+      IF <fs_item>-adjusted_per_amnt_wsl IS NOT INITIAL.
+        WRITE <fs_item>-adjusted_per_amnt_wsl
+          TO gw_accr_data-accural_amount
+          CURRENCY <fs_item>-rwcurper.
+      ELSE.
+        WRITE <fs_item>-period_amnt_wsl
+          TO gw_accr_data-accural_amount
+          CURRENCY <fs_item>-rwcurper.
+      ENDIF.
+    ENDIF.
+  ENDLOOP.
+  APPEND gw_accr_data  TO gt_review_n.
+  SORT  gt_review_n BY afnam.
+  CLEAR : gw_accr_data .
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form send_email
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM send_email USING     pt_template_id TYPE smtg_tmpl_id
+                          pt_recp TYPE STANDARD TABLE.
+
+  TYPES : BEGIN OF ty_excel,
+            line TYPE string,
+          END OF ty_excel.
+
+*attachment
+  DATA :lo_document   TYPE REF TO cl_document_bcs,
+        lif_recipient TYPE REF TO if_recipient_bcs,
+        lt_att_hex    TYPE solix_tab,
+        lv_size_vend  TYPE so_obj_len,
+        lv_codepage   TYPE abap_encod VALUE '4103',
+        lv_mail       TYPE adr6-smtp_addr,
+        lt_excel      TYPE STANDARD TABLE OF ty_excel,
+        lv_string     TYPE string,
+        gc_crlf       TYPE c VALUE cl_bcs_convert=>gc_crlf,
+        lr_bname      TYPE RANGE OF afnam,
+        lv_name       TYPE tdobname.
+
+  CONSTANTS : lc_tab      TYPE c          VALUE cl_bcs_convert=>gc_tab,
+              lc_htm      TYPE so_obj_tp  VALUE 'HTM',
+              lc_poowner  TYPE zconst VALUE   'PO_OWN',
+              lc_person   TYPE zconst VALUE   'P_RESP',
+              lc_user     TYPE zconst VALUE   'U_RESP',
+              lc_frauser  TYPE zconst VALUE 'FRA_USER',
+              lc_xlsx     TYPE so_obj_tp  VALUE 'XLSX',
+              lc_sign     TYPE tvarv_sign VALUE 'I',
+              lc_eq       TYPE tvarv_opti VALUE 'EQ',
+              lc_hyphen   TYPE string     VALUE '-',
+              lc_doctype  TYPE zconst     VALUE 'DOC_TYPE',
+              lc_progname TYPE progname VALUE 'ZFI_ACCURAL_EMAIL_NOTIFICATION',
+              lc_001      TYPE zcounter VALUE '001'.
+
+  SELECT SINGLE const,value FROM zconstants INTO @DATA(ls_constants) WHERE repid = @lc_progname AND const = @sy-sysid AND counter = @lc_001.
+
+*mail template subject and body
+  DATA(lt_cds_key) = VALUE if_smtg_email_template=>ty_gt_data_key( ).
+
+  TRY.
+      DATA(lo_email_api) = cl_smtg_email_api=>get_instance( iv_template_id = pt_template_id  ).
+      lo_email_api->render( EXPORTING iv_language  = sy-langu
+                                      it_data_key  = lt_cds_key
+                            IMPORTING ev_subject   = DATA(lv_subject)
+                                      ev_body_html = DATA(lv_body_html) ).
+
+*replacing the fiori URL with zconstants entry.
+      IF lv_body_html IS NOT INITIAL AND ls_constants IS NOT INITIAL.
+        REPLACE ALL OCCURRENCES OF 'FIORI_URL'
+        IN  lv_body_html WITH ls_constants-value.
+      ENDIF.
+    CATCH cx_smtg_email_common.
+      MESSAGE i001(zfse_00085746).
+  ENDTRY.
+*  prepare excel regarding vendor details
+  IF gt_review_n IS NOT INITIAL.
+    APPEND VALUE #( line = TEXT-002 && || && lc_tab && || && TEXT-003
+                    && || && lc_tab && || && TEXT-004 && || && lc_tab && || && TEXT-005 && || && lc_tab && || && TEXT-006
+                    && || && lc_tab && || && TEXT-007 && || && lc_tab && || && TEXT-023
+                    && || && lc_tab && || && TEXT-024 && || && lc_tab && || && TEXT-008
+                    && || && lc_tab && || && TEXT-025 && || && lc_tab && || && TEXT-009
+                    && || && lc_tab && || && TEXT-010 && || && lc_tab && || && TEXT-011
+                    && || && lc_tab && || && TEXT-012 && || && lc_tab && || && TEXT-013
+                    && || && lc_tab && || && TEXT-015 && || && lc_tab && || && TEXT-016
+                    && || && lc_tab && || && TEXT-017 && || && lc_tab && || && TEXT-018
+                    && || && lc_tab && || && TEXT-019 ) TO lt_excel.
+
+
+    SELECT ebeln ,
+              bsart ,
+              spras
+         INTO TABLE @DATA(lt_ekko)
+         FROM ekko
+         FOR ALL ENTRIES IN @gt_review_n
+         WHERE ebeln = @gt_review_n-ebeln.
+
+    LOOP AT gt_review_n ASSIGNING FIELD-SYMBOL(<fs_rejappr>).
+
+      APPEND VALUE #( line = <fs_rejappr>-bukrs && || && lc_tab && || && <fs_rejappr>-ref_key && || && lc_tab && || && <fs_rejappr>-ref_subkey
+                      && || && lc_tab && || && <fs_rejappr>-sakto && || && lc_tab && || && <fs_rejappr>-period_end_date
+                      && || && lc_tab && || && <fs_rejappr>-netwr && || && lc_tab && || && <fs_rejappr>-srvc_confm_amnt
+                      && || && lc_tab && || && <fs_rejappr>-actual_cost && || && lc_tab && || && <fs_rejappr>-accural_amount
+                      && || && lc_tab && || && <fs_rejappr>-rwcurper && || && lc_tab && || && <fs_rejappr>-afnam
+                      && || && lc_tab && || && <fs_rejappr>-costobjecttype && || && lc_tab && || && <fs_rejappr>-costobject
+                      && || && lc_tab && || && <fs_rejappr>-costobjectowner && || && lc_tab && || && <fs_rejappr>-period_amnt_changed_on
+                      && || && lc_tab && || &&  <fs_rejappr>-reviewed_on
+                      && || && lc_tab && || && <fs_rejappr>-reviewed_by && || && lc_tab && || && <fs_rejappr>-approved_on
+                      && || && lc_tab && || && <fs_rejappr>-approved_by && || && lc_tab && || && <fs_rejappr>-action ) TO lt_excel.
+
+* Get Purchasing Document Type from EKKO Table.
+      DATA(ls_ekko) = VALUE #( lt_ekko[ ebeln = <fs_rejappr>-ebeln ] OPTIONAL ).
+
+*  ZIP0 document only.
+      IF line_exists( gt_const[ const = lc_doctype
+                                value = ls_ekko-bsart ] ) AND <fs_rejappr>-ebeln IS NOT INITIAL.
+        lv_name = <fs_rejappr>-ebeln.
+
+
+        DATA(lv_poowner) = VALUE #( gt_const[ const = lc_poowner ]-value OPTIONAL ).
+*       PO owner
+        IF lv_poowner IN pt_recp.
+          SELECT preparer, requester
+            FROM zfi_t_po_hdr_txt
+            INTO TABLE @DATA(lt_hdr_data)
+            WHERE ebeln = @lv_name.
+          IF sy-subrc EQ 0.
+            LOOP AT lt_hdr_data ASSIGNING FIELD-SYMBOL(<lfs_hdr_data>).
+              APPEND VALUE #( sign = 'I' option = 'EQ' low = <lfs_hdr_data>-preparer ) TO lr_bname.
+              APPEND VALUE #( sign = 'I' option = 'EQ' low = <lfs_hdr_data>-requester ) TO lr_bname.
+            ENDLOOP.
+          ENDIF.
+          IF lr_bname IS NOT INITIAL.
+            SELECT kostl ,smtp_addr
+               FROM p_user002
+               INTO TABLE @gt_mail
+               WHERE bname IN @lr_bname.
+          ENDIF.
+        ENDIF.
+      ENDIF.
+
+      DATA(lv_person) = VALUE #( gt_const[ const = lc_person ]-value OPTIONAL ).
+      DATA(lv_user) = VALUE #( gt_const[ const = lc_user ]-value OPTIONAL ).
+      IF lv_user IN pt_recp. "Collect user responsible
+        lr_bname = VALUE #( BASE lr_bname ( sign = lc_sign option = lc_eq low = <fs_rejappr>-costobjectowner )
+                                           ).
+      ELSEIF lv_person IN pt_recp. "Collect person responsible
+        lr_bname = VALUE #( BASE lr_bname
+                                        ( sign = lc_sign option = lc_eq low = <fs_rejappr>-responsible )
+                                        ).
+      ENDIF.
+    ENDLOOP.
+    IF lr_bname IS NOT INITIAL.
+**User Address for All Users
+      SELECT kostl ,smtp_addr
+             FROM p_user002
+             INTO TABLE @gt_mail_id
+             WHERE bname IN @lr_bname.
+    ENDIF.
+    LOOP AT lt_excel ASSIGNING FIELD-SYMBOL(<fs_tab>).
+      CONCATENATE lv_string <fs_tab>-line gc_crlf INTO lv_string.
+    ENDLOOP.
+
+    TRY.
+        cl_bcs_convert=>string_to_solix(
+          EXPORTING
+            iv_string   = lv_string
+            iv_codepage = lv_codepage
+            iv_add_bom  = abap_true
+          IMPORTING
+            et_solix    = lt_att_hex
+            ev_size     = lv_size_vend ).
+
+      CATCH cx_bcs.
+        MESSAGE e000(zfse_00085746).
+    ENDTRY.
+  ENDIF.
+  TRY.
+      DATA(lo_send_request_ref) = cl_bcs=>create_persistent( ).
+
+      DATA(lv_body_html_soli) = cl_bcs_convert=>string_to_soli( lv_body_html ).
+
+      DATA(lo_multipart_ref) = NEW cl_gbt_multirelated_service( ).
+
+      lo_multipart_ref->set_main_html(
+        EXPORTING
+          content     = lv_body_html_soli
+          description = TEXT-020 ).
+
+      DATA(lv_pdate) = p_date+6(2) && lc_hyphen && p_date+4(2) && lc_hyphen && p_date+0(4).
+      TRY.
+          lv_subject = | { lv_subject } { lv_pdate } |.
+          lo_document = cl_document_bcs=>create_document(
+            i_type    = lc_htm
+            i_text    = lv_body_html_soli
+            i_subject = CONV so_obj_des( lv_subject ) ).
+        CATCH cx_document_bcs.
+          MESSAGE e000(zfse_00085746).
+      ENDTRY.
+      IF p_box1 IS NOT INITIAL.
+*    add the spread sheet as attachment to document object
+        lo_document->add_attachment(
+          i_attachment_type    = lc_xlsx
+          i_attachment_subject = TEXT-022
+          i_attachment_size    = lv_size_vend
+          i_att_content_hex    = lt_att_hex ).
+      ENDIF.
+      lo_send_request_ref->set_document( lo_document ).
+
+
+      IF gt_mail_id IS NOT INITIAL.
+** Send mail to PO Owners and Cost object ownner
+        LOOP AT gt_mail_id ASSIGNING FIELD-SYMBOL(<lfs_mailid>) WHERE smtp_addr IS NOT INITIAL.
+          lv_mail = <lfs_mailid>-smtp_addr.
+          lif_recipient = cl_cam_address_bcs=>create_internet_address( lv_mail ).
+          IF lif_recipient  IS BOUND.
+* Add recipient to send request
+            lo_send_request_ref->add_recipient(
+              EXPORTING
+                i_recipient = lif_recipient
+                i_express   = abap_true ).
+          ENDIF.
+        ENDLOOP.
+        CLEAR:lv_mail.
+      ENDIF.
+*      Po Owner
+      IF lv_poowner IN pt_recp.
+        IF gt_mail IS NOT INITIAL.
+          LOOP AT gt_mail ASSIGNING FIELD-SYMBOL(<lfs_mail>) WHERE smtp_addr IS NOT INITIAL.
+            lv_mail = <lfs_mail>-smtp_addr.
+            lif_recipient = cl_cam_address_bcs=>create_internet_address( lv_mail ).
+            IF lif_recipient  IS BOUND.
+* Add recipient to send request
+              lo_send_request_ref->add_recipient(
+                EXPORTING
+                  i_recipient = lif_recipient
+                  i_express   = abap_true ).
+            ENDIF.
+          ENDLOOP.
+          CLEAR:lv_mail.
+        ENDIF.
+      ENDIF.
+
+* Send mail to FRA Poster, FRA Lead, FRA approver
+      DATA(lv_frauser) = VALUE #( gt_const[ const = lc_frauser ]-value OPTIONAL ).
+      IF lv_frauser IN pt_recp .
+        IF gt_recepients IS NOT INITIAL.
+          LOOP AT gt_recepients ASSIGNING FIELD-SYMBOL(<lfs_mailid1>) WHERE smtp_addr IS NOT INITIAL.
+            lv_mail = <lfs_mailid1>-smtp_addr.
+            lif_recipient = cl_cam_address_bcs=>create_internet_address( lv_mail ).
+            IF lif_recipient  IS BOUND.
+*            Add recipient to send request
+              lo_send_request_ref->add_recipient(
+                EXPORTING
+                  i_recipient = lif_recipient
+                  i_express   = abap_true ).
+            ENDIF.
+          ENDLOOP.
+        ENDIF.
+      ENDIF.
+
+*      Send email
+      DATA(lv_sent_to_all) = lo_send_request_ref->send( ).
+*      If e-mail is successful then do commit work
+      IF lv_sent_to_all = abap_true.
+        CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'
+          EXPORTING
+            wait = abap_true.
+        MESSAGE i002(zfse_00085746).
+      ENDIF.
+    CATCH cx_address_bcs.
+      MESSAGE e000(zfse_00085746).
+    CATCH cx_document_bcs .
+      MESSAGE e000(zfse_00085746).
+    CATCH cx_send_req_bcs.
+      MESSAGE e000(zfse_00085746).
+  ENDTRY.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form clear_tables
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM clear_tables .
+  CLEAR:  gt_review_n,
+          gt_acesobj,
+          gt_recepients,
+          gt_mail_id,
+          gt_const,
+          gw_accr_data ,
+          gt_ekpo,
+          gt_ekkn  ,
+          gt_veark,
+          gt_veraa_user,
+          gt_vernr,
+          gt_usr_nam.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Include          ZFI_ACCRUAL_EMAIL_TRIGER_FORMS
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*& Form authorty_check
+*----------------------------------------------------------------------*
+* Functional Spec : ZFSE-00085746                                      *
+* DD-Reference :    ZDDE-00085747                                      *
+*----------------------------------------------------------------------*
+* Description :                                                        *
+* This program is developed to send the reminders, escalations,        *
+* notifications at various stages in form of an email to the           *
+* responsible person. This program should  be executed in background   *
+*----------------------------------------------------------------------*
+*& Change Log:                                                         *
+*&---------------------------------------------------------------------*
+*& Init     |  Name     |     Date   |            Text                 *
+*&---------------------------------------------------------------------*
+*& KANDUPA1 Pavan Kandula  24-Oct-2024 CR: 1100249506  Initial version *
+*& KANDUPA1 Pavan Kandula  27-Jan-2025 CR: 1100249506  SCR1125 : Collet*
+*&                                     Accrual items data based on the *
+*&                                     values maintained in ZCONSTANT  *
+*&                                     table, Send review Notification *
+*&                                 email to FRA, While sending emails  *
+*&                                 added new fields in Excel attachment*
+*& SAXENHA2 Harshit Saxena 04-Aug-2025 CR: 1100274238 Enhancement to   *
+*&                                     Trigger Email for Preparer and  *
+*&                                     Requester from PO Header Text   *
+*&                                     for ZIP0 Document Type.         *
+*& AMIREHA1 A.Harshitha   22-Sep-2025 CR:1100277278 Modified logic to  *
+*&                                     fetch data for accrual review,  *
+*&                                     approval and status             *
+*& JIMMASU1 Sushma Swaraj 05-Nov-2025 CR:1100281075 Replaced fiori URL *
+*&                                         with zconstants entry in    *
+*&                                         email template              *
+*& KAPULAN1 Anusha K      24-Jul-2026 CR:1100296890 Special Currency   *
+*&                                       amount conversion             *
+*&---------------------------------------------------------------------*
+FORM authorty_check .
+
+  TYPES: BEGIN OF lty_bukrs,
+           bukrs TYPE bukrs,
+         END OF lty_bukrs.
+
+  FIELD-SYMBOLS: <fs_bukrs> TYPE lty_bukrs.
+
+  CONSTANTS: lc_f_bkpf_buk TYPE xuobject   VALUE 'F_BKPF_BUK',
+             lc_bukrs      TYPE fieldname  VALUE 'BUKRS',
+             lc_actvt      TYPE fieldname  VALUE 'ACTVT',
+             lc_03         TYPE activ_auth VALUE '03',
+             lc_sign       TYPE tvarv_sign VALUE 'I',
+             lc_opt        TYPE tvarv_opti VALUE 'EQ'.
+
+
+  DATA: lt_bukrs TYPE STANDARD TABLE OF lty_bukrs,
+        ls_bukrs LIKE LINE OF           gr_bukrs.
+
+
+*Authorization check on company code
+  CLEAR gr_bukrs.
+  SELECT bukrs FROM t001
+               INTO TABLE lt_bukrs
+               WHERE bukrs IN s_bukrs.
+  IF sy-subrc EQ 0.
+    LOOP AT lt_bukrs ASSIGNING <fs_bukrs>.
+      AUTHORITY-CHECK OBJECT lc_f_bkpf_buk
+         ID lc_bukrs FIELD <fs_bukrs>-bukrs
+         ID lc_actvt FIELD lc_03.
+      IF sy-subrc EQ 0.
+*      Those records should be considered for processing
+        ls_bukrs-sign   = lc_sign.
+        ls_bukrs-option = lc_opt.
+        ls_bukrs-low    = <fs_bukrs>-bukrs.
+        APPEND ls_bukrs TO gr_bukrs.
+      ENDIF.
+    ENDLOOP.
+  ENDIF.
+*If no authorization for any company code entered in sel-screen
+*No authorization to execute the report error gets populated.
+  IF gr_bukrs IS INITIAL.
+    LEAVE LIST-PROCESSING.
+  ENDIF.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form disp_data
+*&---------------------------------------------------------------------*
+FORM disp_data.
+
+
+  DATA: lv_date TYPE sy-datum,
+        lv_info TYPE string.
+
+
+**Constant declaration
+  CONSTANTS :lc_n        TYPE char1  VALUE 'N',
+             lc_r        TYPE char1  VALUE 'R',
+             lc_approved TYPE string VALUE 'APPROVED',
+             lc_reject   TYPE string VALUE 'REJECTED',
+             lc_plncst   TYPE ace_itemtype VALUE 'PLNCST'.
+
+** To clear the gloabl variables.
+  PERFORM  clear_tables.
+
+  IF p_date IS INITIAL.
+    p_date = cl_abap_context_info=>get_system_date( ).
+  ENDIF.
+** Get last day of month
+  CALL FUNCTION 'RP_LAST_DAY_OF_MONTHS'
+    EXPORTING
+      day_in            = p_date
+    IMPORTING
+      last_day_of_month = lv_date.
+
+*Fetch Period data of Accrual Item
+  SELECT DISTINCT bukrs,
+                  ref_key,
+                  ref_subkey,
+                  itemtype,
+                  period_end_date,
+                  period_amnt_source,
+                  period_amnt_changed_on,
+                  period_amnt_wsl,
+                  rwcurper,
+                  adjusted_per_amnt_wsl,
+                  review_status,
+                  reviewed_by,
+                  reviewed_on,
+                  approval_status,
+                  approved_by,
+                  approved_on
+                  FROM acesobj_item_per
+                  INTO TABLE @gt_acesobj
+                  WHERE bukrs         IN @gr_bukrs
+                  AND period_end_date = @lv_date
+                  ORDER BY ref_key, ref_subkey.
+
+  IF sy-subrc <> 0.
+    MESSAGE i004(zfse_00085746).
+    LEAVE LIST-PROCESSING.
+  ENDIF.
+* Fetch data from EKPO
+  SELECT DISTINCT
+        ekpo~ebeln,
+        ekpo~ebelp,
+        ekpo~netwr,
+        ekpo~afnam,
+        ekpo~knttp,
+        i~documentcurrency
+   FROM ekpo
+   INNER JOIN i_purchaseorderapi01 AS i
+           ON i~purchaseorder = ekpo~ebeln
+   INNER JOIN @gt_acesobj AS gt
+           ON ekpo~ebeln = gt~ref_key
+   ORDER BY ekpo~ebeln, ekpo~ebelp
+   INTO TABLE @gt_ekpo.
+  IF sy-subrc EQ 0.
+* Fetch data from EKKN
+    SELECT DISTINCT  ekkn~ebeln,
+                     ekkn~ebelp,
+                     ekkn~zekkn,
+                     ekkn~sakto,
+                     ekkn~kostl,
+                     ekkn~aufnr,
+                     ekkn~ps_psp_pnr
+                     FROM ekkn
+                     INNER JOIN @gt_ekpo AS po
+                     ON ekkn~ebeln = po~ebeln
+                     AND ekkn~ebelp = po~ebelp
+                     ORDER BY ekkn~ebeln, ekkn~ebelp,ekkn~zekkn
+                     INTO TABLE @gt_ekkn.
+    IF sy-subrc EQ 0.
+* Fetch data from CSKS
+      SELECT DISTINCT csks~kostl,
+                      csks~verak,
+                      csks~verak_user
+                      FROM csks
+                      INNER JOIN @gt_ekkn AS gt
+                      ON csks~kostl = gt~kostl
+                      ORDER BY csks~kostl
+                      INTO TABLE @gt_veark.
+
+
+
+
+* Fetch data from AUFK
+      SELECT DISTINCT aufk~aufnr,
+                      aufk~veraa_user,
+                      aufk~user2
+                      FROM aufk
+                      INNER JOIN @gt_ekkn AS gt
+                      ON aufk~aufnr = gt~aufnr
+                      ORDER BY aufk~aufnr
+                      INTO TABLE @gt_veraa_user.
+* Fetch data from PRPS
+      SELECT DISTINCT  prps~vernr,
+                       prps~pspnr,
+                       prps~fkstl,
+                       prps~posid
+                       FROM prps
+                       INNER JOIN @gt_ekkn AS gt
+                       ON prps~pspnr = gt~ps_psp_pnr
+                       ORDER BY prps~pspnr
+                       INTO TABLE @gt_vernr.
+      IF sy-subrc EQ 0.
+* Fetch data from TCJ04
+        SELECT vernr,
+               s_usrnam
+               FROM tcj04
+               INTO TABLE @gt_usr_nam
+               FOR ALL ENTRIES IN @gt_vernr
+               WHERE vernr = @gt_vernr-vernr.
+
+
+* Fetch data from CSKS
+        SELECT a~kostl,a~verak_user
+          FROM csks AS a
+          INNER JOIN @gt_vernr AS b
+          ON a~kostl = b~fkstl
+          INTO TABLE @gt_verak_user.
+
+      ENDIF.
+    ENDIF.
+  ENDIF.
+* Fetch data from constant table
+  SELECT const,
+         value
+         FROM zconstants
+         INTO TABLE @gt_const
+         WHERE repid IN ( @gc_repid , @gc_repid1 ).
+
+
+** Fetch FRA Poster, FRA Lead, FRA approver
+  SELECT  a~fra_lead,
+          a~username,
+          b~smtp_addr
+          FROM zfi_accr_eml_usr AS a
+          INNER JOIN p_user002 AS b
+          ON a~username = b~bname
+          WHERE a~companycode IN @s_bukrs
+          INTO TABLE @gt_recepients.
+
+  LOOP AT gt_acesobj ASSIGNING FIELD-SYMBOL(<fs_acceobj>) WHERE itemtype = lc_plncst.
+    "Accrual Review
+    IF p_r1 IS NOT INITIAL.
+      IF <fs_acceobj>-review_status = lc_n AND
+        <fs_acceobj>-period_amnt_changed_on <= p_date.
+        PERFORM fetch_data USING <fs_acceobj>  gc_review.
+      ENDIF.
+    ENDIF.
+
+    "Accrual Approval
+    IF p_r2 IS NOT INITIAL.
+      IF <fs_acceobj>-review_status = abap_true AND
+        <fs_acceobj>-approval_status = lc_n AND
+          <fs_acceobj>-period_amnt_changed_on <= p_date.
+        PERFORM fetch_data USING <fs_acceobj> gc_approve.
+      ENDIF.
+    ENDIF.
+
+
+* Accrual Status
+    IF p_r3 IS NOT INITIAL.
+      IF ( <fs_acceobj>-approval_status = abap_true OR
+           <fs_acceobj>-approval_status = lc_r ) AND
+           <fs_acceobj>-approved_on <= p_date.
+
+        CLEAR lv_info.
+        IF <fs_acceobj>-approval_status = abap_true.
+          lv_info = lc_approved.
+        ELSEIF <fs_acceobj>-approval_status = lc_r .
+          lv_info = lc_reject.
+        ENDIF.
+        PERFORM fetch_data USING <fs_acceobj>  lv_info.
+      ENDIF.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+*& Form fetch_data
+*&---------------------------------------------------------------------*
+FORM fetch_data  USING    ps_acceobj TYPE gty_acsobj
+                          pt_status  TYPE string.
+
+  CONSTANTS: lc_k      TYPE knttp VALUE 'K',
+             lc_f      TYPE knttp VALUE 'F',
+             lc_p      TYPE knttp VALUE 'P',
+             lc_io     TYPE char3 VALUE 'IO',
+             lc_co     TYPE char3 VALUE 'CC',
+             lc_wbs    TYPE char3 VALUE 'WBS',
+             lc_plncst TYPE ace_itemtype VALUE 'PLNCST',
+             lc_actcst TYPE ace_itemtype VALUE 'ACTCST',
+             lc_accrl  TYPE ace_itemtype VALUE 'ACCRL'.
+
+  DATA: lv_ekkn TYPE dzekkn.
+
+  DATA(lv_ebelp) = CONV ebelp( ps_acceobj-ref_subkey+0(5) ).
+
+  DATA(ls_ekpo) = VALUE #( gt_ekpo[ ebeln = ps_acceobj-ref_key+0(10)
+                                    ebelp = lv_ebelp ] OPTIONAL ).
+  IF ls_ekpo IS NOT INITIAL.
+    gw_accr_data-afnam = ls_ekpo-afnam.
+
+    WRITE ls_ekpo-netwr
+      TO gw_accr_data-netwr
+      CURRENCY ls_ekpo-waers.
+  ENDIF.
+
+  lv_ekkn = ps_acceobj-ref_subkey+6(2).
+
+  DATA(ls_ekkn) = VALUE #( gt_ekkn[ ebeln = ls_ekpo-ebeln
+                                    ebelp = ls_ekpo-ebelp zekkn = lv_ekkn ] OPTIONAL ).
+
+  IF ls_ekkn IS NOT INITIAL.
+    gw_accr_data-sakto = ls_ekkn-sakto.
+    CASE ls_ekpo-knttp.
+      WHEN lc_k.
+        gw_accr_data-costobject = ls_ekkn-kostl.
+        gw_accr_data-costobjecttype = lc_co.
+
+        DATA(ls_veark) = VALUE #( gt_veark[ kostl = ls_ekkn-kostl ] OPTIONAL ).
+        IF ls_veark IS NOT INITIAL.
+          gw_accr_data-costobjectowner = ls_veark-verak_user.
+          gw_accr_data-responsible     = ls_veark-verak.
+        ELSE.
+          gw_accr_data-costobjectowner = ls_veark-verak_user.
+        ENDIF.
+
+      WHEN lc_f.
+        gw_accr_data-costobject = ls_ekkn-aufnr.
+        gw_accr_data-costobjecttype = lc_io.
+        DATA(ls_veraa_user) = VALUE #( gt_veraa_user[ aufnr = ls_ekkn-aufnr ] OPTIONAL ).
+        IF ls_veraa_user IS NOT INITIAL.
+          gw_accr_data-costobjectowner = ls_veraa_user-veraa_user.
+          gw_accr_data-responsible = ls_veraa_user-user2.
+        ENDIF.
+
+      WHEN lc_p.
+        IF ls_ekkn-ps_psp_pnr IS NOT INITIAL.
+          DATA: lv_pspnr_ext TYPE string.
+          CALL FUNCTION 'CONVERSION_EXIT_ABPSP_OUTPUT'
+            EXPORTING
+              input  = ls_ekkn-ps_psp_pnr
+            IMPORTING
+              output = lv_pspnr_ext.
+        ENDIF.
+        gw_accr_data-costobject = lv_pspnr_ext.
+        CLEAR: lv_pspnr_ext.
+        gw_accr_data-costobjecttype = lc_wbs.
+        DATA(ls_vernr) = VALUE #( gt_vernr[ pspnr = ls_ekkn-ps_psp_pnr ] OPTIONAL ).
+        IF ls_vernr IS NOT INITIAL.
+          DATA(ls_usrnam) = VALUE #( gt_usr_nam[ vernr = ls_vernr-vernr ] OPTIONAL ).
+          IF ls_usrnam IS NOT INITIAL.
+            gw_accr_data-responsible = ls_usrnam-s_usrnam.
+          ENDIF.
+          DATA(ls_verak) = VALUE #( gt_verak_user[ kostl =  ls_vernr-fkstl ] OPTIONAL ).
+          gw_accr_data-costobjectowner = ls_verak-verak_user.
+        ENDIF.
+    ENDCASE.
+  ENDIF.
+  gw_accr_data-bukrs = ps_acceobj-bukrs .
+  gw_accr_data-ref_key = ps_acceobj-ref_key.
+  gw_accr_data-ebeln = ps_acceobj-ref_key+0(10).
+  gw_accr_data-ref_subkey = ps_acceobj-ref_subkey.
+  gw_accr_data-period_end_date = ps_acceobj-period_end_date.
+  gw_accr_data-period_amnt_source = ps_acceobj-period_amnt_source.
+  gw_accr_data-period_amnt_changed_on = ps_acceobj-period_amnt_changed_on.
+  gw_accr_data-rwcurper = ps_acceobj-rwcurper.
+  gw_accr_data-review_status = ps_acceobj-review_status.
+  gw_accr_data-reviewed_by  = ps_acceobj-reviewed_by.
+  gw_accr_data-reviewed_on  = ps_acceobj-reviewed_on.
+  gw_accr_data-approval_status = ps_acceobj-approval_status.
+  gw_accr_data-approved_by  = ps_acceobj-approved_by.
+  gw_accr_data-approved_on  = ps_acceobj-approved_on.
+  gw_accr_data-action = pt_status.
+** Collect Service confirmed amount,Actual cost,Accrual amount.
+  LOOP AT gt_acesobj ASSIGNING FIELD-SYMBOL(<fs_item>) WHERE ref_key   =  ps_acceobj-ref_key
+                                                       AND  ref_subkey = ps_acceobj-ref_subkey.
+    IF <fs_item>-itemtype = lc_plncst.
+      IF <fs_item>-adjusted_per_amnt_wsl IS NOT INITIAL.
+        WRITE <fs_item>-adjusted_per_amnt_wsl
+          TO gw_accr_data-srvc_confm_amnt
+          CURRENCY <fs_item>-rwcurper.
+      ELSE.
+        WRITE <fs_item>-period_amnt_wsl
+          TO gw_accr_data-srvc_confm_amnt
+          CURRENCY <fs_item>-rwcurper.
+      ENDIF.
+
+    ELSEIF <fs_item>-itemtype = lc_actcst.
+      IF <fs_item>-adjusted_per_amnt_wsl IS NOT INITIAL.
+        WRITE <fs_item>-adjusted_per_amnt_wsl
+          TO gw_accr_data-actual_cost
+          CURRENCY <fs_item>-rwcurper.
+      ELSE.
+        WRITE <fs_item>-period_amnt_wsl
+          TO gw_accr_data-actual_cost
+          CURRENCY <fs_item>-rwcurper.
+      ENDIF.
+
+    ELSEIF <fs_item>-itemtype = lc_accrl.
+      IF <fs_item>-adjusted_per_amnt_wsl IS NOT INITIAL.
+        WRITE <fs_item>-adjusted_per_amnt_wsl
+          TO gw_accr_data-accural_amount
+          CURRENCY <fs_item>-rwcurper.
+      ELSE.
+        WRITE <fs_item>-period_amnt_wsl
+          TO gw_accr_data-accural_amount
+          CURRENCY <fs_item>-rwcurper.
+      ENDIF.
+    ENDIF.
+  ENDLOOP.
+  APPEND gw_accr_data  TO gt_review_n.
+  SORT  gt_review_n BY afnam.
+  CLEAR : gw_accr_data .
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form send_email
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM send_email USING     pt_template_id TYPE smtg_tmpl_id
+                          pt_recp TYPE STANDARD TABLE.
+
+  TYPES : BEGIN OF ty_excel,
+            line TYPE string,
+          END OF ty_excel.
+
+*attachment
+  DATA :lo_document   TYPE REF TO cl_document_bcs,
+        lif_recipient TYPE REF TO if_recipient_bcs,
+        lt_att_hex    TYPE solix_tab,
+        lv_size_vend  TYPE so_obj_len,
+        lv_codepage   TYPE abap_encod VALUE '4103',
+        lv_mail       TYPE adr6-smtp_addr,
+        lt_excel      TYPE STANDARD TABLE OF ty_excel,
+        lv_string     TYPE string,
+        gc_crlf       TYPE c VALUE cl_bcs_convert=>gc_crlf,
+        lr_bname      TYPE RANGE OF afnam,
+        lv_name       TYPE tdobname.
+
+  CONSTANTS : lc_tab      TYPE c          VALUE cl_bcs_convert=>gc_tab,
+              lc_htm      TYPE so_obj_tp  VALUE 'HTM',
+              lc_poowner  TYPE zconst VALUE   'PO_OWN',
+              lc_person   TYPE zconst VALUE   'P_RESP',
+              lc_user     TYPE zconst VALUE   'U_RESP',
+              lc_frauser  TYPE zconst VALUE 'FRA_USER',
+              lc_xlsx     TYPE so_obj_tp  VALUE 'XLSX',
+              lc_sign     TYPE tvarv_sign VALUE 'I',
+              lc_eq       TYPE tvarv_opti VALUE 'EQ',
+              lc_hyphen   TYPE string     VALUE '-',
+              lc_doctype  TYPE zconst     VALUE 'DOC_TYPE',
+              lc_progname TYPE progname VALUE 'ZFI_ACCURAL_EMAIL_NOTIFICATION',
+              lc_001      TYPE zcounter VALUE '001'.
+
+  SELECT SINGLE const,value FROM zconstants INTO @DATA(ls_constants) WHERE repid = @lc_progname AND const = @sy-sysid AND counter = @lc_001.
+
+*mail template subject and body
+  DATA(lt_cds_key) = VALUE if_smtg_email_template=>ty_gt_data_key( ).
+
+  TRY.
+      DATA(lo_email_api) = cl_smtg_email_api=>get_instance( iv_template_id = pt_template_id  ).
+      lo_email_api->render( EXPORTING iv_language  = sy-langu
+                                      it_data_key  = lt_cds_key
+                            IMPORTING ev_subject   = DATA(lv_subject)
+                                      ev_body_html = DATA(lv_body_html) ).
+
+*replacing the fiori URL with zconstants entry.
+      IF lv_body_html IS NOT INITIAL AND ls_constants IS NOT INITIAL.
+        REPLACE ALL OCCURRENCES OF 'FIORI_URL'
+        IN  lv_body_html WITH ls_constants-value.
+      ENDIF.
+    CATCH cx_smtg_email_common.
+      MESSAGE i001(zfse_00085746).
+  ENDTRY.
+*  prepare excel regarding vendor details
+  IF gt_review_n IS NOT INITIAL.
+    APPEND VALUE #( line = TEXT-002 && || && lc_tab && || && TEXT-003
+                    && || && lc_tab && || && TEXT-004 && || && lc_tab && || && TEXT-005 && || && lc_tab && || && TEXT-006
+                    && || && lc_tab && || && TEXT-007 && || && lc_tab && || && TEXT-023
+                    && || && lc_tab && || && TEXT-024 && || && lc_tab && || && TEXT-008
+                    && || && lc_tab && || && TEXT-025 && || && lc_tab && || && TEXT-009
+                    && || && lc_tab && || && TEXT-010 && || && lc_tab && || && TEXT-011
+                    && || && lc_tab && || && TEXT-012 && || && lc_tab && || && TEXT-013
+                    && || && lc_tab && || && TEXT-015 && || && lc_tab && || && TEXT-016
+                    && || && lc_tab && || && TEXT-017 && || && lc_tab && || && TEXT-018
+                    && || && lc_tab && || && TEXT-019 ) TO lt_excel.
+
+
+    SELECT ebeln ,
+              bsart ,
+              spras
+         INTO TABLE @DATA(lt_ekko)
+         FROM ekko
+         FOR ALL ENTRIES IN @gt_review_n
+         WHERE ebeln = @gt_review_n-ebeln.
+
+    LOOP AT gt_review_n ASSIGNING FIELD-SYMBOL(<fs_rejappr>).
+
+      APPEND VALUE #( line = <fs_rejappr>-bukrs && || && lc_tab && || && <fs_rejappr>-ref_key && || && lc_tab && || && <fs_rejappr>-ref_subkey
+                      && || && lc_tab && || && <fs_rejappr>-sakto && || && lc_tab && || && <fs_rejappr>-period_end_date
+                      && || && lc_tab && || && <fs_rejappr>-netwr && || && lc_tab && || && <fs_rejappr>-srvc_confm_amnt
+                      && || && lc_tab && || && <fs_rejappr>-actual_cost && || && lc_tab && || && <fs_rejappr>-accural_amount
+                      && || && lc_tab && || && <fs_rejappr>-rwcurper && || && lc_tab && || && <fs_rejappr>-afnam
+                      && || && lc_tab && || && <fs_rejappr>-costobjecttype && || && lc_tab && || && <fs_rejappr>-costobject
+                      && || && lc_tab && || && <fs_rejappr>-costobjectowner && || && lc_tab && || && <fs_rejappr>-period_amnt_changed_on
+                      && || && lc_tab && || &&  <fs_rejappr>-reviewed_on
+                      && || && lc_tab && || && <fs_rejappr>-reviewed_by && || && lc_tab && || && <fs_rejappr>-approved_on
+                      && || && lc_tab && || && <fs_rejappr>-approved_by && || && lc_tab && || && <fs_rejappr>-action ) TO lt_excel.
+
+* Get Purchasing Document Type from EKKO Table.
+      DATA(ls_ekko) = VALUE #( lt_ekko[ ebeln = <fs_rejappr>-ebeln ] OPTIONAL ).
+
+*  ZIP0 document only.
+      IF line_exists( gt_const[ const = lc_doctype
+                                value = ls_ekko-bsart ] ) AND <fs_rejappr>-ebeln IS NOT INITIAL.
+        lv_name = <fs_rejappr>-ebeln.
+
+
+        DATA(lv_poowner) = VALUE #( gt_const[ const = lc_poowner ]-value OPTIONAL ).
+*       PO owner
+        IF lv_poowner IN pt_recp.
+          SELECT preparer, requester
+            FROM zfi_t_po_hdr_txt
+            INTO TABLE @DATA(lt_hdr_data)
+            WHERE ebeln = @lv_name.
+          IF sy-subrc EQ 0.
+            LOOP AT lt_hdr_data ASSIGNING FIELD-SYMBOL(<lfs_hdr_data>).
+              APPEND VALUE #( sign = 'I' option = 'EQ' low = <lfs_hdr_data>-preparer ) TO lr_bname.
+              APPEND VALUE #( sign = 'I' option = 'EQ' low = <lfs_hdr_data>-requester ) TO lr_bname.
+            ENDLOOP.
+          ENDIF.
+          IF lr_bname IS NOT INITIAL.
+            SELECT kostl ,smtp_addr
+               FROM p_user002
+               INTO TABLE @gt_mail
+               WHERE bname IN @lr_bname.
+          ENDIF.
+        ENDIF.
+      ENDIF.
+
+      DATA(lv_person) = VALUE #( gt_const[ const = lc_person ]-value OPTIONAL ).
+      DATA(lv_user) = VALUE #( gt_const[ const = lc_user ]-value OPTIONAL ).
+      IF lv_user IN pt_recp. "Collect user responsible
+        lr_bname = VALUE #( BASE lr_bname ( sign = lc_sign option = lc_eq low = <fs_rejappr>-costobjectowner )
+                                           ).
+      ELSEIF lv_person IN pt_recp. "Collect person responsible
+        lr_bname = VALUE #( BASE lr_bname
+                                        ( sign = lc_sign option = lc_eq low = <fs_rejappr>-responsible )
+                                        ).
+      ENDIF.
+    ENDLOOP.
+    IF lr_bname IS NOT INITIAL.
+**User Address for All Users
+      SELECT kostl ,smtp_addr
+             FROM p_user002
+             INTO TABLE @gt_mail_id
+             WHERE bname IN @lr_bname.
+    ENDIF.
+    LOOP AT lt_excel ASSIGNING FIELD-SYMBOL(<fs_tab>).
+      CONCATENATE lv_string <fs_tab>-line gc_crlf INTO lv_string.
+    ENDLOOP.
+
+    TRY.
+        cl_bcs_convert=>string_to_solix(
+          EXPORTING
+            iv_string   = lv_string
+            iv_codepage = lv_codepage
+            iv_add_bom  = abap_true
+          IMPORTING
+            et_solix    = lt_att_hex
+            ev_size     = lv_size_vend ).
+
+      CATCH cx_bcs.
+        MESSAGE e000(zfse_00085746).
+    ENDTRY.
+  ENDIF.
+  TRY.
+      DATA(lo_send_request_ref) = cl_bcs=>create_persistent( ).
+
+      DATA(lv_body_html_soli) = cl_bcs_convert=>string_to_soli( lv_body_html ).
+
+      DATA(lo_multipart_ref) = NEW cl_gbt_multirelated_service( ).
+
+      lo_multipart_ref->set_main_html(
+        EXPORTING
+          content     = lv_body_html_soli
+          description = TEXT-020 ).
+
+      DATA(lv_pdate) = p_date+6(2) && lc_hyphen && p_date+4(2) && lc_hyphen && p_date+0(4).
+      TRY.
+          lv_subject = | { lv_subject } { lv_pdate } |.
+          lo_document = cl_document_bcs=>create_document(
+            i_type    = lc_htm
+            i_text    = lv_body_html_soli
+            i_subject = CONV so_obj_des( lv_subject ) ).
+        CATCH cx_document_bcs.
+          MESSAGE e000(zfse_00085746).
+      ENDTRY.
+      IF p_box1 IS NOT INITIAL.
+*    add the spread sheet as attachment to document object
+        lo_document->add_attachment(
+          i_attachment_type    = lc_xlsx
+          i_attachment_subject = TEXT-022
+          i_attachment_size    = lv_size_vend
+          i_att_content_hex    = lt_att_hex ).
+      ENDIF.
+      lo_send_request_ref->set_document( lo_document ).
+
+
+      IF gt_mail_id IS NOT INITIAL.
+** Send mail to PO Owners and Cost object ownner
+        LOOP AT gt_mail_id ASSIGNING FIELD-SYMBOL(<lfs_mailid>) WHERE smtp_addr IS NOT INITIAL.
+          lv_mail = <lfs_mailid>-smtp_addr.
+          lif_recipient = cl_cam_address_bcs=>create_internet_address( lv_mail ).
+          IF lif_recipient  IS BOUND.
+* Add recipient to send request
+            lo_send_request_ref->add_recipient(
+              EXPORTING
+                i_recipient = lif_recipient
+                i_express   = abap_true ).
+          ENDIF.
+        ENDLOOP.
+        CLEAR:lv_mail.
+      ENDIF.
+*      Po Owner
+      IF lv_poowner IN pt_recp.
+        IF gt_mail IS NOT INITIAL.
+          LOOP AT gt_mail ASSIGNING FIELD-SYMBOL(<lfs_mail>) WHERE smtp_addr IS NOT INITIAL.
+            lv_mail = <lfs_mail>-smtp_addr.
+            lif_recipient = cl_cam_address_bcs=>create_internet_address( lv_mail ).
+            IF lif_recipient  IS BOUND.
+* Add recipient to send request
+              lo_send_request_ref->add_recipient(
+                EXPORTING
+                  i_recipient = lif_recipient
+                  i_express   = abap_true ).
+            ENDIF.
+          ENDLOOP.
+          CLEAR:lv_mail.
+        ENDIF.
+      ENDIF.
+
+* Send mail to FRA Poster, FRA Lead, FRA approver
+      DATA(lv_frauser) = VALUE #( gt_const[ const = lc_frauser ]-value OPTIONAL ).
+      IF lv_frauser IN pt_recp .
+        IF gt_recepients IS NOT INITIAL.
+          LOOP AT gt_recepients ASSIGNING FIELD-SYMBOL(<lfs_mailid1>) WHERE smtp_addr IS NOT INITIAL.
+            lv_mail = <lfs_mailid1>-smtp_addr.
+            lif_recipient = cl_cam_address_bcs=>create_internet_address( lv_mail ).
+            IF lif_recipient  IS BOUND.
+*            Add recipient to send request
+              lo_send_request_ref->add_recipient(
+                EXPORTING
+                  i_recipient = lif_recipient
+                  i_express   = abap_true ).
+            ENDIF.
+          ENDLOOP.
+        ENDIF.
+      ENDIF.
+
+*      Send email
+      DATA(lv_sent_to_all) = lo_send_request_ref->send( ).
+*      If e-mail is successful then do commit work
+      IF lv_sent_to_all = abap_true.
+        CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'
+          EXPORTING
+            wait = abap_true.
+        MESSAGE i002(zfse_00085746).
+      ENDIF.
+    CATCH cx_address_bcs.
+      MESSAGE e000(zfse_00085746).
+    CATCH cx_document_bcs .
+      MESSAGE e000(zfse_00085746).
+    CATCH cx_send_req_bcs.
+      MESSAGE e000(zfse_00085746).
+  ENDTRY.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form clear_tables
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM clear_tables .
+  CLEAR:  gt_review_n,
+          gt_acesobj,
+          gt_recepients,
+          gt_mail_id,
+          gt_const,
+          gw_accr_data ,
+          gt_ekpo,
+          gt_ekkn  ,
+          gt_veark,
+          gt_veraa_user,
+          gt_vernr,
+          gt_usr_nam.
+ENDFORM.
+
+
+
+
+FORMS-
+
+*&---------------------------------------------------------------------*
+*& Include          ZFI_ACCRUAL_EMAIL_TRIGER_FORMS
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*& Form authorty_check
+*----------------------------------------------------------------------*
+* Functional Spec : ZFSE-00085746                                      *
+* DD-Reference :    ZDDE-00085747                                      *
+*----------------------------------------------------------------------*
+* Description :                                                        *
+* This program is developed to send the reminders, escalations,        *
+* notifications at various stages in form of an email to the           *
+* responsible person. This program should  be executed in background   *
+*----------------------------------------------------------------------*
+*& Change Log:                                                         *
+*&---------------------------------------------------------------------*
+*& Init     |  Name     |     Date   |            Text                 *
+*&---------------------------------------------------------------------*
+*& KANDUPA1 Pavan Kandula  24-Oct-2024 CR: 1100249506  Initial version *
+*& KANDUPA1 Pavan Kandula  27-Jan-2025 CR: 1100249506  SCR1125 : Collet*
+*&                                     Accrual items data based on the *
+*&                                     values maintained in ZCONSTANT  *
+*&                                     table, Send review Notification *
+*&                                 email to FRA, While sending emails  *
+*&                                 added new fields in Excel attachment*
+*& SAXENHA2 Harshit Saxena 04-Aug-2025 CR: 1100274238 Enhancement to   *
+*&                                     Trigger Email for Preparer and  *
+*&                                     Requester from PO Header Text   *
+*&                                     for ZIP0 Document Type.         *
+*& AMIREHA1 A.Harshitha   22-Sep-2025 CR:1100277278 Modified logic to  *
+*&                                     fetch data for accrual review,  *
+*&                                     approval and status             *
+*& JIMMASU1 Sushma Swaraj 05-Nov-2025 CR:1100281075 Replaced fiori URL *
+*&                                         with zconstants entry in    *
+*&                                         email template              *
+*& KAPULAN1 Anusha K      24-Jul-2026 CR:1100296890 Special Currency   *
+*&                                       amount conversion             *
+*&---------------------------------------------------------------------*
+FORM authorty_check .
+
+  TYPES: BEGIN OF lty_bukrs,
+           bukrs TYPE bukrs,
+         END OF lty_bukrs.
+
+  FIELD-SYMBOLS: <fs_bukrs> TYPE lty_bukrs.
+
+  CONSTANTS: lc_f_bkpf_buk TYPE xuobject   VALUE 'F_BKPF_BUK',
+             lc_bukrs      TYPE fieldname  VALUE 'BUKRS',
+             lc_actvt      TYPE fieldname  VALUE 'ACTVT',
+             lc_03         TYPE activ_auth VALUE '03',
+             lc_sign       TYPE tvarv_sign VALUE 'I',
+             lc_opt        TYPE tvarv_opti VALUE 'EQ'.
+
+
+  DATA: lt_bukrs TYPE STANDARD TABLE OF lty_bukrs,
+        ls_bukrs LIKE LINE OF           gr_bukrs.
+
+
+*Authorization check on company code
+  CLEAR gr_bukrs.
+  SELECT bukrs FROM t001
+               INTO TABLE lt_bukrs
+               WHERE bukrs IN s_bukrs.
+  IF sy-subrc EQ 0.
+    LOOP AT lt_bukrs ASSIGNING <fs_bukrs>.
+      AUTHORITY-CHECK OBJECT lc_f_bkpf_buk
+         ID lc_bukrs FIELD <fs_bukrs>-bukrs
+         ID lc_actvt FIELD lc_03.
+      IF sy-subrc EQ 0.
+*      Those records should be considered for processing
+        ls_bukrs-sign   = lc_sign.
+        ls_bukrs-option = lc_opt.
+        ls_bukrs-low    = <fs_bukrs>-bukrs.
+        APPEND ls_bukrs TO gr_bukrs.
+      ENDIF.
+    ENDLOOP.
+  ENDIF.
+*If no authorization for any company code entered in sel-screen
+*No authorization to execute the report error gets populated.
+  IF gr_bukrs IS INITIAL.
+    LEAVE LIST-PROCESSING.
+  ENDIF.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form disp_data
+*&---------------------------------------------------------------------*
+FORM disp_data.
+
+
+  DATA: lv_date TYPE sy-datum,
+        lv_info TYPE string.
+
+
+**Constant declaration
+  CONSTANTS :lc_n        TYPE char1  VALUE 'N',
+             lc_r        TYPE char1  VALUE 'R',
+             lc_approved TYPE string VALUE 'APPROVED',
+             lc_reject   TYPE string VALUE 'REJECTED',
+             lc_plncst   TYPE ace_itemtype VALUE 'PLNCST'.
+
+** To clear the gloabl variables.
+  PERFORM  clear_tables.
+
+  IF p_date IS INITIAL.
+    p_date = cl_abap_context_info=>get_system_date( ).
+  ENDIF.
+** Get last day of month
+  CALL FUNCTION 'RP_LAST_DAY_OF_MONTHS'
+    EXPORTING
+      day_in            = p_date
+    IMPORTING
+      last_day_of_month = lv_date.
+
+*Fetch Period data of Accrual Item
+  SELECT DISTINCT bukrs,
+                  ref_key,
+                  ref_subkey,
+                  itemtype,
+                  period_end_date,
+                  period_amnt_source,
+                  period_amnt_changed_on,
+                  period_amnt_wsl,
+                  rwcurper,
+                  adjusted_per_amnt_wsl,
+                  review_status,
+                  reviewed_by,
+                  reviewed_on,
+                  approval_status,
+                  approved_by,
+                  approved_on
+                  FROM acesobj_item_per
+                  INTO TABLE @gt_acesobj
+                  WHERE bukrs         IN @gr_bukrs
+                  AND period_end_date = @lv_date
+                  ORDER BY ref_key, ref_subkey.
+
+  IF sy-subrc <> 0.
+    MESSAGE i004(zfse_00085746).
+    LEAVE LIST-PROCESSING.
+  ENDIF.
+* Fetch data from EKPO
+  SELECT DISTINCT
+        ekpo~ebeln,
+        ekpo~ebelp,
+        ekpo~netwr,
+        ekpo~afnam,
+        ekpo~knttp,
+        i~documentcurrency
+   FROM ekpo
+   INNER JOIN i_purchaseorderapi01 AS i
+           ON i~purchaseorder = ekpo~ebeln
+   INNER JOIN @gt_acesobj AS gt
+           ON ekpo~ebeln = gt~ref_key
+   ORDER BY ekpo~ebeln, ekpo~ebelp
+   INTO TABLE @gt_ekpo.
+  IF sy-subrc EQ 0.
+* Fetch data from EKKN
+    SELECT DISTINCT  ekkn~ebeln,
+                     ekkn~ebelp,
+                     ekkn~zekkn,
+                     ekkn~sakto,
+                     ekkn~kostl,
+                     ekkn~aufnr,
+                     ekkn~ps_psp_pnr
+                     FROM ekkn
+                     INNER JOIN @gt_ekpo AS po
+                     ON ekkn~ebeln = po~ebeln
+                     AND ekkn~ebelp = po~ebelp
+                     ORDER BY ekkn~ebeln, ekkn~ebelp,ekkn~zekkn
+                     INTO TABLE @gt_ekkn.
+    IF sy-subrc EQ 0.
+* Fetch data from CSKS
+      SELECT DISTINCT csks~kostl,
+                      csks~verak,
+                      csks~verak_user
+                      FROM csks
+                      INNER JOIN @gt_ekkn AS gt
+                      ON csks~kostl = gt~kostl
+                      ORDER BY csks~kostl
+                      INTO TABLE @gt_veark.
+
+
+
+
+* Fetch data from AUFK
+      SELECT DISTINCT aufk~aufnr,
+                      aufk~veraa_user,
+                      aufk~user2
+                      FROM aufk
+                      INNER JOIN @gt_ekkn AS gt
+                      ON aufk~aufnr = gt~aufnr
+                      ORDER BY aufk~aufnr
+                      INTO TABLE @gt_veraa_user.
+* Fetch data from PRPS
+      SELECT DISTINCT  prps~vernr,
+                       prps~pspnr,
+                       prps~fkstl,
+                       prps~posid
+                       FROM prps
+                       INNER JOIN @gt_ekkn AS gt
+                       ON prps~pspnr = gt~ps_psp_pnr
+                       ORDER BY prps~pspnr
+                       INTO TABLE @gt_vernr.
+      IF sy-subrc EQ 0.
+* Fetch data from TCJ04
+        SELECT vernr,
+               s_usrnam
+               FROM tcj04
+               INTO TABLE @gt_usr_nam
+               FOR ALL ENTRIES IN @gt_vernr
+               WHERE vernr = @gt_vernr-vernr.
+
+
+* Fetch data from CSKS
+        SELECT a~kostl,a~verak_user
+          FROM csks AS a
+          INNER JOIN @gt_vernr AS b
+          ON a~kostl = b~fkstl
+          INTO TABLE @gt_verak_user.
+
+      ENDIF.
+    ENDIF.
+  ENDIF.
+* Fetch data from constant table
+  SELECT const,
+         value
+         FROM zconstants
+         INTO TABLE @gt_const
+         WHERE repid IN ( @gc_repid , @gc_repid1 ).
+
+
+** Fetch FRA Poster, FRA Lead, FRA approver
+  SELECT  a~fra_lead,
+          a~username,
+          b~smtp_addr
+          FROM zfi_accr_eml_usr AS a
+          INNER JOIN p_user002 AS b
+          ON a~username = b~bname
+          WHERE a~companycode IN @s_bukrs
+          INTO TABLE @gt_recepients.
+
+  LOOP AT gt_acesobj ASSIGNING FIELD-SYMBOL(<fs_acceobj>) WHERE itemtype = lc_plncst.
+    "Accrual Review
+    IF p_r1 IS NOT INITIAL.
+      IF <fs_acceobj>-review_status = lc_n AND
+        <fs_acceobj>-period_amnt_changed_on <= p_date.
+        PERFORM fetch_data USING <fs_acceobj>  gc_review.
+      ENDIF.
+    ENDIF.
+
+    "Accrual Approval
+    IF p_r2 IS NOT INITIAL.
+      IF <fs_acceobj>-review_status = abap_true AND
+        <fs_acceobj>-approval_status = lc_n AND
+          <fs_acceobj>-period_amnt_changed_on <= p_date.
+        PERFORM fetch_data USING <fs_acceobj> gc_approve.
+      ENDIF.
+    ENDIF.
+
+
+* Accrual Status
+    IF p_r3 IS NOT INITIAL.
+      IF ( <fs_acceobj>-approval_status = abap_true OR
+           <fs_acceobj>-approval_status = lc_r ) AND
+           <fs_acceobj>-approved_on <= p_date.
+
+        CLEAR lv_info.
+        IF <fs_acceobj>-approval_status = abap_true.
+          lv_info = lc_approved.
+        ELSEIF <fs_acceobj>-approval_status = lc_r .
+          lv_info = lc_reject.
+        ENDIF.
+        PERFORM fetch_data USING <fs_acceobj>  lv_info.
+      ENDIF.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+*& Form fetch_data
+*&---------------------------------------------------------------------*
+FORM fetch_data  USING    ps_acceobj TYPE gty_acsobj
+                          pt_status  TYPE string.
+
+  CONSTANTS: lc_k      TYPE knttp VALUE 'K',
+             lc_f      TYPE knttp VALUE 'F',
+             lc_p      TYPE knttp VALUE 'P',
+             lc_io     TYPE char3 VALUE 'IO',
+             lc_co     TYPE char3 VALUE 'CC',
+             lc_wbs    TYPE char3 VALUE 'WBS',
+             lc_plncst TYPE ace_itemtype VALUE 'PLNCST',
+             lc_actcst TYPE ace_itemtype VALUE 'ACTCST',
+             lc_accrl  TYPE ace_itemtype VALUE 'ACCRL'.
+
+  DATA: lv_ekkn TYPE dzekkn.
+
+  DATA(lv_ebelp) = CONV ebelp( ps_acceobj-ref_subkey+0(5) ).
+
+  DATA(ls_ekpo) = VALUE #( gt_ekpo[ ebeln = ps_acceobj-ref_key+0(10)
+                                    ebelp = lv_ebelp ] OPTIONAL ).
+  IF ls_ekpo IS NOT INITIAL.
+    gw_accr_data-afnam = ls_ekpo-afnam.
+
+    WRITE ls_ekpo-netwr
+      TO gw_accr_data-netwr
+      CURRENCY ls_ekpo-waers.
+  ENDIF.
+
+  lv_ekkn = ps_acceobj-ref_subkey+6(2).
+
+  DATA(ls_ekkn) = VALUE #( gt_ekkn[ ebeln = ls_ekpo-ebeln
+                                    ebelp = ls_ekpo-ebelp zekkn = lv_ekkn ] OPTIONAL ).
+
+  IF ls_ekkn IS NOT INITIAL.
+    gw_accr_data-sakto = ls_ekkn-sakto.
+    CASE ls_ekpo-knttp.
+      WHEN lc_k.
+        gw_accr_data-costobject = ls_ekkn-kostl.
+        gw_accr_data-costobjecttype = lc_co.
+
+        DATA(ls_veark) = VALUE #( gt_veark[ kostl = ls_ekkn-kostl ] OPTIONAL ).
+        IF ls_veark IS NOT INITIAL.
+          gw_accr_data-costobjectowner = ls_veark-verak_user.
+          gw_accr_data-responsible     = ls_veark-verak.
+        ELSE.
+          gw_accr_data-costobjectowner = ls_veark-verak_user.
+        ENDIF.
+
+      WHEN lc_f.
+        gw_accr_data-costobject = ls_ekkn-aufnr.
+        gw_accr_data-costobjecttype = lc_io.
+        DATA(ls_veraa_user) = VALUE #( gt_veraa_user[ aufnr = ls_ekkn-aufnr ] OPTIONAL ).
+        IF ls_veraa_user IS NOT INITIAL.
+          gw_accr_data-costobjectowner = ls_veraa_user-veraa_user.
+          gw_accr_data-responsible = ls_veraa_user-user2.
+        ENDIF.
+
+      WHEN lc_p.
+        IF ls_ekkn-ps_psp_pnr IS NOT INITIAL.
+          DATA: lv_pspnr_ext TYPE string.
+          CALL FUNCTION 'CONVERSION_EXIT_ABPSP_OUTPUT'
+            EXPORTING
+              input  = ls_ekkn-ps_psp_pnr
+            IMPORTING
+              output = lv_pspnr_ext.
+        ENDIF.
+        gw_accr_data-costobject = lv_pspnr_ext.
+        CLEAR: lv_pspnr_ext.
+        gw_accr_data-costobjecttype = lc_wbs.
+        DATA(ls_vernr) = VALUE #( gt_vernr[ pspnr = ls_ekkn-ps_psp_pnr ] OPTIONAL ).
+        IF ls_vernr IS NOT INITIAL.
+          DATA(ls_usrnam) = VALUE #( gt_usr_nam[ vernr = ls_vernr-vernr ] OPTIONAL ).
+          IF ls_usrnam IS NOT INITIAL.
+            gw_accr_data-responsible = ls_usrnam-s_usrnam.
+          ENDIF.
+          DATA(ls_verak) = VALUE #( gt_verak_user[ kostl =  ls_vernr-fkstl ] OPTIONAL ).
+          gw_accr_data-costobjectowner = ls_verak-verak_user.
+        ENDIF.
+    ENDCASE.
+  ENDIF.
+  gw_accr_data-bukrs = ps_acceobj-bukrs .
+  gw_accr_data-ref_key = ps_acceobj-ref_key.
+  gw_accr_data-ebeln = ps_acceobj-ref_key+0(10).
+  gw_accr_data-ref_subkey = ps_acceobj-ref_subkey.
+  gw_accr_data-period_end_date = ps_acceobj-period_end_date.
+  gw_accr_data-period_amnt_source = ps_acceobj-period_amnt_source.
+  gw_accr_data-period_amnt_changed_on = ps_acceobj-period_amnt_changed_on.
+  gw_accr_data-rwcurper = ps_acceobj-rwcurper.
+  gw_accr_data-review_status = ps_acceobj-review_status.
+  gw_accr_data-reviewed_by  = ps_acceobj-reviewed_by.
+  gw_accr_data-reviewed_on  = ps_acceobj-reviewed_on.
+  gw_accr_data-approval_status = ps_acceobj-approval_status.
+  gw_accr_data-approved_by  = ps_acceobj-approved_by.
+  gw_accr_data-approved_on  = ps_acceobj-approved_on.
+  gw_accr_data-action = pt_status.
+** Collect Service confirmed amount,Actual cost,Accrual amount.
+  LOOP AT gt_acesobj ASSIGNING FIELD-SYMBOL(<fs_item>) WHERE ref_key   =  ps_acceobj-ref_key
+                                                       AND  ref_subkey = ps_acceobj-ref_subkey.
+    IF <fs_item>-itemtype = lc_plncst.
+      IF <fs_item>-adjusted_per_amnt_wsl IS NOT INITIAL.
+        WRITE <fs_item>-adjusted_per_amnt_wsl
+          TO gw_accr_data-srvc_confm_amnt
+          CURRENCY <fs_item>-rwcurper.
+      ELSE.
+        WRITE <fs_item>-period_amnt_wsl
+          TO gw_accr_data-srvc_confm_amnt
+          CURRENCY <fs_item>-rwcurper.
+      ENDIF.
+
+    ELSEIF <fs_item>-itemtype = lc_actcst.
+      IF <fs_item>-adjusted_per_amnt_wsl IS NOT INITIAL.
+        WRITE <fs_item>-adjusted_per_amnt_wsl
+          TO gw_accr_data-actual_cost
+          CURRENCY <fs_item>-rwcurper.
+      ELSE.
+        WRITE <fs_item>-period_amnt_wsl
+          TO gw_accr_data-actual_cost
+          CURRENCY <fs_item>-rwcurper.
+      ENDIF.
+
+    ELSEIF <fs_item>-itemtype = lc_accrl.
+      IF <fs_item>-adjusted_per_amnt_wsl IS NOT INITIAL.
+        WRITE <fs_item>-adjusted_per_amnt_wsl
+          TO gw_accr_data-accural_amount
+          CURRENCY <fs_item>-rwcurper.
+      ELSE.
+        WRITE <fs_item>-period_amnt_wsl
+          TO gw_accr_data-accural_amount
+          CURRENCY <fs_item>-rwcurper.
+      ENDIF.
+    ENDIF.
+  ENDLOOP.
+  APPEND gw_accr_data  TO gt_review_n.
+  SORT  gt_review_n BY afnam.
+  CLEAR : gw_accr_data .
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form send_email
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM send_email USING     pt_template_id TYPE smtg_tmpl_id
+                          pt_recp TYPE STANDARD TABLE.
+
+  TYPES : BEGIN OF ty_excel,
+            line TYPE string,
+          END OF ty_excel.
+
+*attachment
+  DATA :lo_document   TYPE REF TO cl_document_bcs,
+        lif_recipient TYPE REF TO if_recipient_bcs,
+        lt_att_hex    TYPE solix_tab,
+        lv_size_vend  TYPE so_obj_len,
+        lv_codepage   TYPE abap_encod VALUE '4103',
+        lv_mail       TYPE adr6-smtp_addr,
+        lt_excel      TYPE STANDARD TABLE OF ty_excel,
+        lv_string     TYPE string,
+        gc_crlf       TYPE c VALUE cl_bcs_convert=>gc_crlf,
+        lr_bname      TYPE RANGE OF afnam,
+        lv_name       TYPE tdobname.
+
+  CONSTANTS : lc_tab      TYPE c          VALUE cl_bcs_convert=>gc_tab,
+              lc_htm      TYPE so_obj_tp  VALUE 'HTM',
+              lc_poowner  TYPE zconst VALUE   'PO_OWN',
+              lc_person   TYPE zconst VALUE   'P_RESP',
+              lc_user     TYPE zconst VALUE   'U_RESP',
+              lc_frauser  TYPE zconst VALUE 'FRA_USER',
+              lc_xlsx     TYPE so_obj_tp  VALUE 'XLSX',
+              lc_sign     TYPE tvarv_sign VALUE 'I',
+              lc_eq       TYPE tvarv_opti VALUE 'EQ',
+              lc_hyphen   TYPE string     VALUE '-',
+              lc_doctype  TYPE zconst     VALUE 'DOC_TYPE',
+              lc_progname TYPE progname VALUE 'ZFI_ACCURAL_EMAIL_NOTIFICATION',
+              lc_001      TYPE zcounter VALUE '001'.
+
+  SELECT SINGLE const,value FROM zconstants INTO @DATA(ls_constants) WHERE repid = @lc_progname AND const = @sy-sysid AND counter = @lc_001.
+
+*mail template subject and body
+  DATA(lt_cds_key) = VALUE if_smtg_email_template=>ty_gt_data_key( ).
+
+  TRY.
+      DATA(lo_email_api) = cl_smtg_email_api=>get_instance( iv_template_id = pt_template_id  ).
+      lo_email_api->render( EXPORTING iv_language  = sy-langu
+                                      it_data_key  = lt_cds_key
+                            IMPORTING ev_subject   = DATA(lv_subject)
+                                      ev_body_html = DATA(lv_body_html) ).
+
+*replacing the fiori URL with zconstants entry.
+      IF lv_body_html IS NOT INITIAL AND ls_constants IS NOT INITIAL.
+        REPLACE ALL OCCURRENCES OF 'FIORI_URL'
+        IN  lv_body_html WITH ls_constants-value.
+      ENDIF.
+    CATCH cx_smtg_email_common.
+      MESSAGE i001(zfse_00085746).
+  ENDTRY.
+*  prepare excel regarding vendor details
+  IF gt_review_n IS NOT INITIAL.
+    APPEND VALUE #( line = TEXT-002 && || && lc_tab && || && TEXT-003
+                    && || && lc_tab && || && TEXT-004 && || && lc_tab && || && TEXT-005 && || && lc_tab && || && TEXT-006
+                    && || && lc_tab && || && TEXT-007 && || && lc_tab && || && TEXT-023
+                    && || && lc_tab && || && TEXT-024 && || && lc_tab && || && TEXT-008
+                    && || && lc_tab && || && TEXT-025 && || && lc_tab && || && TEXT-009
+                    && || && lc_tab && || && TEXT-010 && || && lc_tab && || && TEXT-011
+                    && || && lc_tab && || && TEXT-012 && || && lc_tab && || && TEXT-013
+                    && || && lc_tab && || && TEXT-015 && || && lc_tab && || && TEXT-016
+                    && || && lc_tab && || && TEXT-017 && || && lc_tab && || && TEXT-018
+                    && || && lc_tab && || && TEXT-019 ) TO lt_excel.
+
+
+    SELECT ebeln ,
+              bsart ,
+              spras
+         INTO TABLE @DATA(lt_ekko)
+         FROM ekko
+         FOR ALL ENTRIES IN @gt_review_n
+         WHERE ebeln = @gt_review_n-ebeln.
+
+    LOOP AT gt_review_n ASSIGNING FIELD-SYMBOL(<fs_rejappr>).
+
+      APPEND VALUE #( line = <fs_rejappr>-bukrs && || && lc_tab && || && <fs_rejappr>-ref_key && || && lc_tab && || && <fs_rejappr>-ref_subkey
+                      && || && lc_tab && || && <fs_rejappr>-sakto && || && lc_tab && || && <fs_rejappr>-period_end_date
+                      && || && lc_tab && || && <fs_rejappr>-netwr && || && lc_tab && || && <fs_rejappr>-srvc_confm_amnt
+                      && || && lc_tab && || && <fs_rejappr>-actual_cost && || && lc_tab && || && <fs_rejappr>-accural_amount
+                      && || && lc_tab && || && <fs_rejappr>-rwcurper && || && lc_tab && || && <fs_rejappr>-afnam
+                      && || && lc_tab && || && <fs_rejappr>-costobjecttype && || && lc_tab && || && <fs_rejappr>-costobject
+                      && || && lc_tab && || && <fs_rejappr>-costobjectowner && || && lc_tab && || && <fs_rejappr>-period_amnt_changed_on
+                      && || && lc_tab && || &&  <fs_rejappr>-reviewed_on
+                      && || && lc_tab && || && <fs_rejappr>-reviewed_by && || && lc_tab && || && <fs_rejappr>-approved_on
+                      && || && lc_tab && || && <fs_rejappr>-approved_by && || && lc_tab && || && <fs_rejappr>-action ) TO lt_excel.
+
+* Get Purchasing Document Type from EKKO Table.
+      DATA(ls_ekko) = VALUE #( lt_ekko[ ebeln = <fs_rejappr>-ebeln ] OPTIONAL ).
+
+*  ZIP0 document only.
+      IF line_exists( gt_const[ const = lc_doctype
+                                value = ls_ekko-bsart ] ) AND <fs_rejappr>-ebeln IS NOT INITIAL.
+        lv_name = <fs_rejappr>-ebeln.
+
+
+        DATA(lv_poowner) = VALUE #( gt_const[ const = lc_poowner ]-value OPTIONAL ).
+*       PO owner
+        IF lv_poowner IN pt_recp.
+          SELECT preparer, requester
+            FROM zfi_t_po_hdr_txt
+            INTO TABLE @DATA(lt_hdr_data)
+            WHERE ebeln = @lv_name.
+          IF sy-subrc EQ 0.
+            LOOP AT lt_hdr_data ASSIGNING FIELD-SYMBOL(<lfs_hdr_data>).
+              APPEND VALUE #( sign = 'I' option = 'EQ' low = <lfs_hdr_data>-preparer ) TO lr_bname.
+              APPEND VALUE #( sign = 'I' option = 'EQ' low = <lfs_hdr_data>-requester ) TO lr_bname.
+            ENDLOOP.
+          ENDIF.
+          IF lr_bname IS NOT INITIAL.
+            SELECT kostl ,smtp_addr
+               FROM p_user002
+               INTO TABLE @gt_mail
+               WHERE bname IN @lr_bname.
+          ENDIF.
+        ENDIF.
+      ENDIF.
+
+      DATA(lv_person) = VALUE #( gt_const[ const = lc_person ]-value OPTIONAL ).
+      DATA(lv_user) = VALUE #( gt_const[ const = lc_user ]-value OPTIONAL ).
+      IF lv_user IN pt_recp. "Collect user responsible
+        lr_bname = VALUE #( BASE lr_bname ( sign = lc_sign option = lc_eq low = <fs_rejappr>-costobjectowner )
+                                           ).
+      ELSEIF lv_person IN pt_recp. "Collect person responsible
+        lr_bname = VALUE #( BASE lr_bname
+                                        ( sign = lc_sign option = lc_eq low = <fs_rejappr>-responsible )
+                                        ).
+      ENDIF.
+    ENDLOOP.
+    IF lr_bname IS NOT INITIAL.
+**User Address for All Users
+      SELECT kostl ,smtp_addr
+             FROM p_user002
+             INTO TABLE @gt_mail_id
+             WHERE bname IN @lr_bname.
+    ENDIF.
+    LOOP AT lt_excel ASSIGNING FIELD-SYMBOL(<fs_tab>).
+      CONCATENATE lv_string <fs_tab>-line gc_crlf INTO lv_string.
+    ENDLOOP.
+
+    TRY.
+        cl_bcs_convert=>string_to_solix(
+          EXPORTING
+            iv_string   = lv_string
+            iv_codepage = lv_codepage
+            iv_add_bom  = abap_true
+          IMPORTING
+            et_solix    = lt_att_hex
+            ev_size     = lv_size_vend ).
+
+      CATCH cx_bcs.
+        MESSAGE e000(zfse_00085746).
+    ENDTRY.
+  ENDIF.
+  TRY.
+      DATA(lo_send_request_ref) = cl_bcs=>create_persistent( ).
+
+      DATA(lv_body_html_soli) = cl_bcs_convert=>string_to_soli( lv_body_html ).
+
+      DATA(lo_multipart_ref) = NEW cl_gbt_multirelated_service( ).
+
+      lo_multipart_ref->set_main_html(
+        EXPORTING
+          content     = lv_body_html_soli
+          description = TEXT-020 ).
+
+      DATA(lv_pdate) = p_date+6(2) && lc_hyphen && p_date+4(2) && lc_hyphen && p_date+0(4).
+      TRY.
+          lv_subject = | { lv_subject } { lv_pdate } |.
+          lo_document = cl_document_bcs=>create_document(
+            i_type    = lc_htm
+            i_text    = lv_body_html_soli
+            i_subject = CONV so_obj_des( lv_subject ) ).
+        CATCH cx_document_bcs.
+          MESSAGE e000(zfse_00085746).
+      ENDTRY.
+      IF p_box1 IS NOT INITIAL.
+*    add the spread sheet as attachment to document object
+        lo_document->add_attachment(
+          i_attachment_type    = lc_xlsx
+          i_attachment_subject = TEXT-022
+          i_attachment_size    = lv_size_vend
+          i_att_content_hex    = lt_att_hex ).
+      ENDIF.
+      lo_send_request_ref->set_document( lo_document ).
+
+
+      IF gt_mail_id IS NOT INITIAL.
+** Send mail to PO Owners and Cost object ownner
+        LOOP AT gt_mail_id ASSIGNING FIELD-SYMBOL(<lfs_mailid>) WHERE smtp_addr IS NOT INITIAL.
+          lv_mail = <lfs_mailid>-smtp_addr.
+          lif_recipient = cl_cam_address_bcs=>create_internet_address( lv_mail ).
+          IF lif_recipient  IS BOUND.
+* Add recipient to send request
+            lo_send_request_ref->add_recipient(
+              EXPORTING
+                i_recipient = lif_recipient
+                i_express   = abap_true ).
+          ENDIF.
+        ENDLOOP.
+        CLEAR:lv_mail.
+      ENDIF.
+*      Po Owner
+      IF lv_poowner IN pt_recp.
+        IF gt_mail IS NOT INITIAL.
+          LOOP AT gt_mail ASSIGNING FIELD-SYMBOL(<lfs_mail>) WHERE smtp_addr IS NOT INITIAL.
+            lv_mail = <lfs_mail>-smtp_addr.
+            lif_recipient = cl_cam_address_bcs=>create_internet_address( lv_mail ).
+            IF lif_recipient  IS BOUND.
+* Add recipient to send request
+              lo_send_request_ref->add_recipient(
+                EXPORTING
+                  i_recipient = lif_recipient
+                  i_express   = abap_true ).
+            ENDIF.
+          ENDLOOP.
+          CLEAR:lv_mail.
+        ENDIF.
+      ENDIF.
+
+* Send mail to FRA Poster, FRA Lead, FRA approver
+      DATA(lv_frauser) = VALUE #( gt_const[ const = lc_frauser ]-value OPTIONAL ).
+      IF lv_frauser IN pt_recp .
+        IF gt_recepients IS NOT INITIAL.
+          LOOP AT gt_recepients ASSIGNING FIELD-SYMBOL(<lfs_mailid1>) WHERE smtp_addr IS NOT INITIAL.
+            lv_mail = <lfs_mailid1>-smtp_addr.
+            lif_recipient = cl_cam_address_bcs=>create_internet_address( lv_mail ).
+            IF lif_recipient  IS BOUND.
+*            Add recipient to send request
+              lo_send_request_ref->add_recipient(
+                EXPORTING
+                  i_recipient = lif_recipient
+                  i_express   = abap_true ).
+            ENDIF.
+          ENDLOOP.
+        ENDIF.
+      ENDIF.
+
+*      Send email
+      DATA(lv_sent_to_all) = lo_send_request_ref->send( ).
+*      If e-mail is successful then do commit work
+      IF lv_sent_to_all = abap_true.
+        CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'
+          EXPORTING
+            wait = abap_true.
+        MESSAGE i002(zfse_00085746).
+      ENDIF.
+    CATCH cx_address_bcs.
+      MESSAGE e000(zfse_00085746).
+    CATCH cx_document_bcs .
+      MESSAGE e000(zfse_00085746).
+    CATCH cx_send_req_bcs.
+      MESSAGE e000(zfse_00085746).
+  ENDTRY.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form clear_tables
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM clear_tables .
+  CLEAR:  gt_review_n,
+          gt_acesobj,
+          gt_recepients,
+          gt_mail_id,
+          gt_const,
+          gw_accr_data ,
+          gt_ekpo,
+          gt_ekkn  ,
+          gt_veark,
+          gt_veraa_user,
+          gt_vernr,
+          gt_usr_nam.
+ENDFORM.
